@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { apply as activate } from '../src/index.ts'
-import type { FakeContext, CapturedRegistration } from '../src/testing.ts'
+import { activate } from '../src/index.ts'
+import type { FakeContext, CapturedRegistration } from '../src/contract.ts'
 
-function makeCtx(opts?: { enabled?: boolean; projectRoot?: string }): FakeContext {
+function makeCtx(opts?: { enabled?: boolean; omitConfig?: boolean }): FakeContext {
   const registrations: CapturedRegistration[] = []
   return {
     registrations,
-    config: { enabled: opts?.enabled ?? false, projectRoot: opts?.projectRoot ?? '/proj' },
-    captured: registrations,
+    unregister(registration: CapturedRegistration) {
+      const at = registrations.indexOf(registration)
+      if (at !== -1) registrations.splice(at, 1)
+    },
+    config: opts?.omitConfig ? (undefined as never) : { enabled: opts?.enabled ?? false, projectRoot: '/proj' },
   }
 }
 
@@ -25,6 +28,20 @@ describe('CodeGraph bundle activation (single seam)', () => {
     expect(ctx.registrations).toHaveLength(0)
   })
 
+  it('defaults to disabled when project configuration is absent', () => {
+    const ctx = makeCtx({ omitConfig: true })
+    expect(() => activate(ctx)).not.toThrow()
+    expect(ctx.registrations).toHaveLength(0)
+  })
+
+  it('re-activation does not duplicate the registration', () => {
+    const ctx = makeCtx({ enabled: true })
+    activate(ctx)
+    activate(ctx)
+    activate(ctx)
+    expect(ctx.registrations).toHaveLength(1)
+  })
+
   it('the returned disposer unregisters the tool', () => {
     const ctx = makeCtx({ enabled: true })
     activate(ctx)
@@ -32,6 +49,7 @@ describe('CodeGraph bundle activation (single seam)', () => {
     expect(reg.disposed).toBe(false)
     reg.disposer()
     expect(reg.disposed).toBe(true)
+    expect(ctx.registrations).toHaveLength(0)
   })
 
   it('a smoke call returns mode echo, empty paths, diagnostics array, and P1 capabilities metadata', async () => {
@@ -51,6 +69,31 @@ describe('CodeGraph bundle activation (single seam)', () => {
       expect(result.metadata.capabilities[lang]).toEqual({ stage: 'P1', precision: 'syntax+inferred' })
     }
     expect(result.metadata.index.status).toBe('empty')
+  })
+
+  it('an out-of-enum mode returns an invalid_mode diagnostic, not a coerced answer', async () => {
+    const ctx = makeCtx({ enabled: true })
+    activate(ctx)
+    const reg = ctx.registrations[0]
+    const result = (await reg.execute({ mode: 'nonsense', target: 'foo' })) as {
+      mode: string
+      paths: unknown[]
+      diagnostics: Array<{ code: string; message: string }>
+    }
+    expect(result.mode).toBe('nonsense')
+    expect(result.paths).toEqual([])
+    expect(result.diagnostics).toHaveLength(1)
+    expect(result.diagnostics[0].code).toBe('invalid_mode')
+  })
+
+  it('the schema requires both mode and target', () => {
+    const ctx = makeCtx({ enabled: true })
+    activate(ctx)
+    const schema = ctx.registrations[0].parametersSchema as { required: string[]; properties: Record<string, { maximum?: number; default?: number }> }
+    expect(schema.required).toEqual(['mode', 'target'])
+    expect(schema.properties.max_depth.maximum).toBe(20)
+    expect(schema.properties.max_depth.default).toBe(5)
+    expect(schema.properties.limit.maximum).toBe(200)
   })
 
   it('the tool description teaches the three modes, parameters, and diagnostics vocabulary', () => {
