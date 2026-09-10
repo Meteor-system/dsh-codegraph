@@ -39,4 +39,9 @@ export interface FakeContext {
 export interface CodeGraphProjectConfig {
   enabled: boolean
   projectRoot: string
+  /**
+   * Project-level budget/scope overrides (ticket 7): max_file_bytes,
+   * max_files, build_timeout_ms, include globs, exclude globs.
+   */
+  overrides?: Record<string, unknown>
 }

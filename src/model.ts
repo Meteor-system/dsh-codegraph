@@ -75,3 +75,18 @@ export interface Diagnostic {
   code: DiagnosticCode
   message: string
 }
+
+/** The closed diagnostic vocabulary (ADR-0004): no ad-hoc strings. */
+export const DIAGNOSTIC_CODES: ReadonlySet<DiagnosticCode> = new Set([
+  'partial',
+  'unsupported_language',
+  'indexing',
+  'truncated',
+  'invalid_mode',
+  'no_path',
+  'ambiguous_target',
+  'file_oversize',
+  'file_binary',
+  'file_decode_failed',
+  'file_count_stop',
+])

@@ -12,6 +12,8 @@ export interface Snapshot {
   schemaVersion: number
   /** Edges grouped by file for cheap incremental refresh later. */
   byFile: Record<string, RelationEdge[]>
+  /** Hash of the scan-shape settings the snapshot was built with. */
+  scanShapeHash?: string
 }
 
 export function storeDirOf(projectRoot: string): string {

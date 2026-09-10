@@ -9,7 +9,9 @@ import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import type { RelationEdge, RelationKind, Diagnostic } from './model.ts'
 import { SNIPPET_LINE_MAX_CHARS, SNIPPET_MAX_LINES } from './model.ts'
-import { scanProject, DEFAULT_SCAN_LIMITS } from './scan.ts'
+import { scanProject } from './scan.ts'
+import { DEFAULT_SCAN_LIMITS } from './scan.ts'
+import type { ScanLimits } from './scan.ts'
 import { relationsForFile } from './extract-ts.ts'
 import { loadSnapshot, saveSnapshot } from './store.ts'
 import { upstreamTraversal } from './traverse.ts'
@@ -91,6 +93,9 @@ const RESULT_HARD_CAP = 200
 const IMPACT_DEFAULT_DEPTH = 5
 const IMPACT_HARD_CAP = 20
 
+/** Extensions the TS-family extraction adapter handles (ADR-0005). */
+const TS_FAMILY_EXTENSIONS: ReadonlySet<string> = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'])
+
 /**
  * Post-process call edges once every project definition is known:
  * a call whose callee matches a project-wide definition stays
@@ -121,8 +126,13 @@ export class ProjectGraph {
   private fingerprints: Record<string, FileFingerprint> = {}
   /** Single-flight guard: one refresh at a time (ticket 5). */
   private readonly singleFlight = new SingleFlight()
+  /** Project-level budget/scope overrides (ticket 7). */
+  private overrides: Record<string, unknown>
+  /** Scan-level deviations from the most recent build (ticket 7). */
+  private scanDiagnostics: Diagnostic[] = []
 
-  constructor(private readonly projectRoot: string) {
+  constructor(private readonly projectRoot: string, overrides?: Record<string, unknown>) {
+    this.overrides = overrides ?? {}
     this.metadata = {
       capabilities: {
         typescript: { stage: 'P1', precision: 'syntax+inferred' },
@@ -142,7 +152,7 @@ export class ProjectGraph {
   ensureBuilt(): void {
     if (this.metadata.index.status !== 'built' || this.edges.length > 0) return
     const snap = loadSnapshot(this.projectRoot)
-    if (snap !== undefined) {
+    if (snap !== undefined && snap.scanShapeHash === this.scanShapeHash()) {
       this.edges = Object.values(snap.byFile).flat()
       this.metadata.index.status = 'reused'
       this.metadata.index.files = Object.keys(snap.byFile).length
@@ -151,15 +161,33 @@ export class ProjectGraph {
     this.rebuild()
   }
 
+  /** Identity of the scan-shape settings; a change invalidates the snapshot. */
+  private scanShapeHash(): string {
+    const l = this.scanLimits()
+    return JSON.stringify([l.maxFileBytes, l.maxFiles, l.include ?? [], l.exclude ?? []])
+  }
+
+  /** Project scan limits: defaults replaced by per-project overrides. */
+  private scanLimits(): ScanLimits {
+    return {
+      maxFileBytes: (this.overrides['max_file_bytes'] as number) ?? DEFAULT_SCAN_LIMITS.maxFileBytes,
+      maxFiles: (this.overrides['max_files'] as number) ?? DEFAULT_SCAN_LIMITS.maxFiles,
+      include: this.overrides['include'] as string[] | undefined,
+      exclude: this.overrides['exclude'] as string[] | undefined,
+    }
+  }
+
   /** Full rebuild: scan + extract + persist. Also the version-mismatch path. */
   rebuild(): void {
-    const scan = scanProject(this.projectRoot, DEFAULT_SCAN_LIMITS)
+    const limits = this.scanLimits()
+    const scan = scanProject(this.projectRoot, limits)
     const fileSet = new Set(scan.files)
     const byFile: Record<string, RelationEdge[]> = {}
     const fingerprints: Record<string, FileFingerprint> = {}
     for (const rel of scan.files) {
       const ext = rel.slice(rel.lastIndexOf('.')).toLowerCase()
-      if (!['.ts', '.tsx', '.js', '.jsx'].includes(ext)) continue
+      // TS-family extraction covers .mjs/.cjs too (plain ES/CommonJS modules).
+      if (!TS_FAMILY_EXTENSIONS.has(ext) && !limits.include?.some((g) => rel.toLowerCase().endsWith(g.replace('**/*', '.')))) continue
       try {
         byFile[rel] = relationsForFile(join(this.projectRoot, rel), rel, fileSet)
       } catch {
@@ -171,9 +199,15 @@ export class ProjectGraph {
     resolveCallConfidence(byFile)
     this.edges = Object.values(byFile).flat()
     this.fingerprints = fingerprints
-    saveSnapshot(this.projectRoot, { schemaVersion: 1, byFile })
+    saveSnapshot(this.projectRoot, { schemaVersion: 1, byFile, scanShapeHash: this.scanShapeHash() })
     this.metadata.index.status = 'rebuilt'
     this.metadata.index.files = scan.files.length
+    // Scan deviations become diagnostics (ticket 7): never silent.
+    const scanDiags: Diagnostic[] = scan.skips.map((s) => ({ code: s.code, message: s.message }))
+    if (scan.stoppedEarly) {
+      scanDiags.push({ code: 'file_count_stop', message: `scan stopped at ${limits.maxFiles} files; raise max_files to index more` })
+    }
+    this.scanDiagnostics = scanDiags
   }
 
   /**
@@ -229,11 +263,12 @@ export class ProjectGraph {
 
   /** Async entry: refresh, then answer. Timeout path returns indexing status. */
   async answerWithTimeout(query: GraphQuery, refreshTimeoutMs?: number): Promise<GraphAnswer> {
-    if (refreshTimeoutMs !== undefined && refreshTimeoutMs <= 0) {
-      // Refresh budget exhausted before starting: if a refresh would be
-      // needed, report indexing with progress — answering from the stale
-      // snapshot is forbidden (no stale-while-revalidate, ticket 5).
-      const changed = this.hasBuilt() ? this.peekDirty() : false
+    const budget = refreshTimeoutMs ?? (this.overrides['build_timeout_ms'] as number | undefined)
+    if (budget !== undefined && budget <= 0) {
+      // Budget exhausted before starting: if a build/refresh would be
+      // needed, report indexing with progress — answering from a stale
+      // graph is forbidden (no stale-while-revalidate, ticket 5/7).
+      const changed = this.hasBuilt() ? this.peekDirty() : true
       if (changed) {
         return {
           paths: [],
@@ -242,7 +277,7 @@ export class ProjectGraph {
           total: 0,
           diagnostics: [{
             code: 'indexing',
-            message: 'index refresh required and refresh budget exhausted; retry the same query',
+            message: 'index build/refresh required and the timeout budget is exhausted; retry the same query',
           }],
           metadata: {
             ...this.metadata,
@@ -269,7 +304,12 @@ export class ProjectGraph {
   answer(query: GraphQuery): GraphAnswer {
     this.ensureBuilt()
     // Hard cap enforcement with a diagnostic on clamp (ticket 6 AC).
-    const diagnostics: Diagnostic[] = []
+    const diagnostics: Diagnostic[] = [...this.scanDiagnostics]
+    // A partial diagnostic rides along whenever any deviation occurred
+    // (ticket 7 AC): scan skips, count stop, or anything already listed.
+    if (diagnostics.length > 0 && !diagnostics.some((d) => d.code === 'partial')) {
+      diagnostics.unshift({ code: 'partial', message: 'index deviations occurred; see accompanying diagnostics' })
+    }
     let requestedLimit = query.limit ?? RESULT_DEFAULT_LIMIT
     if (requestedLimit > RESULT_HARD_CAP) {
       diagnostics.push({ code: 'partial', message: `limit ${requestedLimit} clamped to hard cap ${RESULT_HARD_CAP}` })
@@ -528,11 +568,27 @@ function keyOfEdge(edge: RelationEdge): string {
  */
 const projectGraphs = new Map<string, ProjectGraph>()
 
-export function graphFor(projectRoot: string): ProjectGraph {
-  let graph = projectGraphs.get(projectRoot)
-  if (graph === undefined) {
-    graph = new ProjectGraph(projectRoot)
-    projectGraphs.set(projectRoot, graph)
+/**
+ * One graph per project root (ADR-0003). Overrides participate in the
+ * cache key: changed overrides replace the cached graph so budget/scope
+ * changes take effect instead of being silently ignored.
+ */
+export function graphFor(projectRoot: string, overrides?: Record<string, unknown>): ProjectGraph {
+  const key = JSON.stringify([projectRoot, overrides ?? {}])
+  const existing = projectGraphs.get(key)
+  if (existing !== undefined) return existing
+  if (projectGraphs.size > 0) {
+    // A same-root graph with different overrides is now stale by definition.
+    for (const cachedKey of [...projectGraphs.keys()]) {
+      try {
+        const [cachedRoot] = JSON.parse(cachedKey) as [string]
+        if (cachedRoot === projectRoot) projectGraphs.delete(cachedKey)
+      } catch {
+        projectGraphs.delete(cachedKey)
+      }
+    }
   }
+  const graph = new ProjectGraph(projectRoot, overrides)
+  projectGraphs.set(key, graph)
   return graph
 }

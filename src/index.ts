@@ -120,7 +120,7 @@ export function activate(ctx: FakeContext): void {
           metadata: { capabilities: P1_CAPABILITIES, index: { status: 'empty' } },
         }
       }
-      const graph = graphFor(config.projectRoot)
+      const graph = graphFor(config.projectRoot, config.overrides)
       const raw = input as { refresh_timeout_ms?: number; include_snippets?: boolean; confidence?: string }
       const answer = await graph.answerWithTimeout(
         {
