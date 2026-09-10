@@ -18,6 +18,7 @@ import { upstreamTraversal } from './traverse.ts'
 import { resolveCallConfidence } from './graph-internals.ts'
 import { detectChanges, fingerprintOf, incrementalRefresh, SingleFlight } from './refresh.ts'
 import type { FileFingerprint } from './refresh.ts'
+import { discoverPackages, packageOf } from './packages.ts'
 
 export interface ImpactLayers {
   /** Symbols directly affected (1 hop). */
@@ -41,6 +42,8 @@ export interface IndexMetadata {
   }
   /** Present on impact queries: direct/transitive layers (ticket 4). */
   impact?: ImpactLayers
+  /** Package boundary map: package dir → 'package' (ticket 8). */
+  packages?: Record<string, string>
 }
 
 export interface GraphQuery {
@@ -48,6 +51,7 @@ export interface GraphQuery {
   target?: string
   relation?: RelationKind
   confidence?: string
+  scope?: string
   limit?: number
   max_depth?: number
   path_to?: string
@@ -182,6 +186,7 @@ export class ProjectGraph {
     const limits = this.scanLimits()
     const scan = scanProject(this.projectRoot, limits)
     const fileSet = new Set(scan.files)
+    const packages = discoverPackages(this.projectRoot)
     const byFile: Record<string, RelationEdge[]> = {}
     const fingerprints: Record<string, FileFingerprint> = {}
     for (const rel of scan.files) {
@@ -189,7 +194,7 @@ export class ProjectGraph {
       // TS-family extraction covers .mjs/.cjs too (plain ES/CommonJS modules).
       if (!TS_FAMILY_EXTENSIONS.has(ext) && !limits.include?.some((g) => rel.toLowerCase().endsWith(g.replace('**/*', '.')))) continue
       try {
-        byFile[rel] = relationsForFile(join(this.projectRoot, rel), rel, fileSet)
+        byFile[rel] = relationsForFile(join(this.projectRoot, rel), rel, fileSet, packages)
       } catch {
         byFile[rel] = []
       }
@@ -202,6 +207,12 @@ export class ProjectGraph {
     saveSnapshot(this.projectRoot, { schemaVersion: 1, byFile, scanShapeHash: this.scanShapeHash() })
     this.metadata.index.status = 'rebuilt'
     this.metadata.index.files = scan.files.length
+    // Package boundaries as first-class metadata (ticket 8).
+    const packageMap: Record<string, string> = {}
+    for (const pkg of packages) {
+      if (pkg.dir !== '') packageMap[pkg.dir] = 'package'
+    }
+    this.metadata.packages = packageMap
     // Scan deviations become diagnostics (ticket 7): never silent.
     const scanDiags: Diagnostic[] = scan.skips.map((s) => ({ code: s.code, message: s.message }))
     if (scan.stoppedEarly) {
@@ -328,6 +339,16 @@ export class ProjectGraph {
     let edges = this.edges.filter((e) => wanted.includes(e.kind))
     if (query.confidence !== undefined) {
       edges = edges.filter((e) => e.confidence === query.confidence)
+    }
+    if (query.scope !== undefined) {
+      // Scope: path prefix or package prefix; a scope name that matches a
+      // known package dir expands to that directory prefix (ticket 8).
+      let prefix = query.scope.replace(/\\/g, '/').replace(/\/$/, '')
+      if (this.metadata.packages !== undefined) {
+        const matched = Object.keys(this.metadata.packages).find((dir) => dir === prefix || dir.endsWith('/' + prefix))
+        if (matched !== undefined) prefix = matched
+      }
+      edges = edges.filter((e) => e.location.file.startsWith(prefix + '/'))
     }
     if (query.target !== undefined) {
       const needle = query.target.toLowerCase()

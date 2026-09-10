@@ -10,6 +10,8 @@ import * as ts from 'typescript'
 import { readFileSync } from 'node:fs'
 import { join, dirname, posix } from 'node:path'
 import type { RelationEdge, RelationKind, Confidence } from './model.ts'
+import type { PackageInfo } from './packages.ts'
+import { resolvePackageImport } from './packages.ts'
 
 export function scriptKindOf(filePath: string): ts.ScriptKind {
   if (filePath.endsWith('.tsx')) return ts.ScriptKind.TSX
@@ -109,17 +111,8 @@ export interface ExtractedRelation {
   location: { file: string; line: number; col: number }
 }
 
-/**
- * Extract definition + import + call relations for one file.
- *
- * Call resolution (syntax-level, no type checker — ADR-0005):
- * - same-file definition match → `exact` call edge (target = symbol name);
- * - name imported from a resolved local module → `inferred` call edge
- *   (target = "file:symbol" identity of the defining module);
- * - anything else (dynamic dispatch, globals) → `heuristic` edge on the
- *   source file, so unresolvable calls surface without pretending proof.
- */
-export function relationsForFile(absPath: string, relPath: string, projectFiles: ReadonlySet<string>): ExtractedRelation[] {
+/** Extract definition + import + call relations for one file. */
+export function relationsForFile(absPath: string, relPath: string, projectFiles: ReadonlySet<string>, packages?: PackageInfo[]): ExtractedRelation[] {
   const extracted = extractTsFamily(absPath, relPath)
   const relations: ExtractedRelation[] = extracted.symbols.map((s) => ({
     kind: s.kind,
@@ -129,7 +122,8 @@ export function relationsForFile(absPath: string, relPath: string, projectFiles:
     location: { file: relPath, line: s.line, col: s.col },
   }))
   for (const imp of extracted.imports) {
-    const resolved = resolveLocalImport(relPath, imp.specifier, projectFiles)
+    const local = resolveLocalImport(relPath, imp.specifier, projectFiles)
+    const resolved = local ?? (packages !== undefined ? resolvePackageImport(imp.specifier, packages, projectFiles) : undefined)
     if (resolved !== undefined) {
       relations.push({
         kind: 'import',

@@ -65,6 +65,8 @@ export interface ExploreResponse {
     index: { status: string }
     /** Present on impact queries: direct/transitive layers (ticket 4). */
     impact?: { direct: string[]; transitive: string[]; maxDepth: number }
+    /** Package boundary map: package dir → 'package' (ticket 8). */
+    packages?: Record<string, string>
   }
 }
 
@@ -97,7 +99,7 @@ export function activate(ctx: FakeContext): void {
         max_depth: { type: 'integer', minimum: 1, maximum: IMPACT_HARD_CAP, default: IMPACT_DEFAULT_DEPTH },
         relation: { type: 'string', enum: ['definition', 'call', 'import', 'inherit', 'type-ref'] },
         confidence: { type: 'string', enum: ['exact', 'inferred', 'heuristic'] },
-        scope: { type: 'string' },
+        scope: { type: 'string', description: 'restrict results to a package or path prefix' },
         limit: { type: 'integer', minimum: 1, maximum: RESULT_HARD_CAP, default: RESULT_DEFAULT_LIMIT },
         include_snippets: { type: 'boolean' },
         path_to: { type: 'string', description: 'reachability only: the symbol the path must arrive at' },
@@ -121,13 +123,14 @@ export function activate(ctx: FakeContext): void {
         }
       }
       const graph = graphFor(config.projectRoot, config.overrides)
-      const raw = input as { refresh_timeout_ms?: number; include_snippets?: boolean; confidence?: string }
+      const raw = input as { refresh_timeout_ms?: number; include_snippets?: boolean; confidence?: string; scope?: string }
       const answer = await graph.answerWithTimeout(
         {
           mode: args.mode,
           target: args.target,
           relation: args.relation as never,
           confidence: raw.confidence,
+          scope: raw.scope,
           limit: args.limit,
           max_depth: args.max_depth,
           path_to: args.path_to,
@@ -147,6 +150,7 @@ export function activate(ctx: FakeContext): void {
           capabilities: answer.metadata.capabilities,
           index: { ...answer.metadata.index },
           impact: answer.metadata.impact,
+          packages: answer.metadata.packages,
         },
       }
     },
