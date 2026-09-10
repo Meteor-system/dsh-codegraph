@@ -59,6 +59,8 @@ export interface ExploreResponse {
   metadata: {
     capabilities: Record<string, { stage: 'P1' | 'P2' | 'P3'; precision: string }>
     index: { status: string }
+    /** Present on impact queries: direct/transitive layers (ticket 4). */
+    impact?: { direct: string[]; transitive: string[]; maxDepth: number }
   }
 }
 
@@ -94,11 +96,12 @@ export function activate(ctx: FakeContext): void {
         scope: { type: 'string' },
         limit: { type: 'integer', minimum: 1, maximum: RESULT_HARD_CAP, default: RESULT_DEFAULT_LIMIT },
         include_snippets: { type: 'boolean' },
+        path_to: { type: 'string', description: 'reachability only: the symbol the path must arrive at' },
       },
       required: ['mode', 'target'],
     },
     execute: async (input: unknown): Promise<ExploreResponse> => {
-      const args = input as { mode?: string; target?: string; relation?: string; limit?: number }
+      const args = input as { mode?: string; target?: string; relation?: string; limit?: number; max_depth?: number; path_to?: string }
       // No silent fallback: an out-of-enum mode is a diagnostic, never a
       // coerced answer (spec: partial results + diagnostics beat guesses).
       if (args.mode === undefined || !(MODES as readonly string[]).includes(args.mode)) {
@@ -115,6 +118,8 @@ export function activate(ctx: FakeContext): void {
         target: args.target,
         relation: args.relation as never,
         limit: args.limit,
+        max_depth: args.max_depth,
+        path_to: args.path_to,
       })
       return {
         mode: args.mode,
@@ -123,6 +128,7 @@ export function activate(ctx: FakeContext): void {
         metadata: {
           capabilities: answer.metadata.capabilities,
           index: { status: answer.metadata.index.status },
+          impact: answer.metadata.impact,
         },
       }
     },

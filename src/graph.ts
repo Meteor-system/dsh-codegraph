@@ -11,6 +11,16 @@ import type { RelationEdge, RelationKind, Diagnostic } from './model.ts'
 import { scanProject, DEFAULT_SCAN_LIMITS } from './scan.ts'
 import { relationsForFile } from './extract-ts.ts'
 import { loadSnapshot, saveSnapshot } from './store.ts'
+import { upstreamTraversal } from './traverse.ts'
+
+export interface ImpactLayers {
+  /** Symbols directly affected (1 hop). */
+  direct: string[]
+  /** Symbols affected transitively (2..maxDepth hops). */
+  transitive: string[]
+  /** The effective depth used (after clamping). */
+  maxDepth: number
+}
 
 export interface IndexMetadata {
   capabilities: Record<string, { stage: 'P1'; precision: string }>
@@ -18,6 +28,8 @@ export interface IndexMetadata {
     status: 'built' | 'reused' | 'rebuilt'
     files: number
   }
+  /** Present on impact queries: direct/transitive layers (ticket 4). */
+  impact?: ImpactLayers
 }
 
 export interface GraphQuery {
@@ -25,9 +37,13 @@ export interface GraphQuery {
   target?: string
   relation?: RelationKind
   limit?: number
+  max_depth?: number
+  path_to?: string
 }
 
 const RESULT_DEFAULT_LIMIT = 50
+const IMPACT_DEFAULT_DEPTH = 5
+const IMPACT_HARD_CAP = 20
 
 /**
  * Post-process call edges once every project definition is known:
@@ -175,6 +191,13 @@ export class ProjectGraph {
     }
 
     // One path per edge for ticket 2 (callers/reach compose paths later).
+    // Reachability and impact have dedicated traversal branches (ticket 4).
+    if (query.mode === 'reachability' && query.path_to !== undefined) {
+      return this.answerReachability(query, limit)
+    }
+    if (query.mode === 'impact') {
+      return this.answerImpact(query, limit)
+    }
     const paths = edges.slice(0, limit).map((e) => ({ edges: [e] }))
     const diagnostics: Diagnostic[] = []
     if (edges.length > limit) {
@@ -182,4 +205,95 @@ export class ProjectGraph {
     }
     return { paths, diagnostics, metadata: this.metadata }
   }
+
+  /**
+   * Reachability (ticket 4): does X reach Y? Bounded upstream walk from
+   * Y's callers toward X; a path exists iff some walk reaches X. Empty
+   * result + `no_path` diagnostic is a definitive answer, not an error.
+   */
+  private answerReachability(query: GraphQuery, limit: number): GraphAnswer {
+    const diagnostics: Diagnostic[] = []
+    const depth = this.clampDepth(query.max_depth ?? IMPACT_DEFAULT_DEPTH, diagnostics)
+    const callEdges = this.edges.filter((e) => e.kind === 'call')
+
+    const from = (query.target ?? '').toLowerCase()
+    const to = query.path_to!.toLowerCase()
+    // Walk upstream from `to`; success iff any hop's caller symbol is `from`.
+    const visited = new Set<string>()
+    interface Step { edge: RelationEdge; callerSymbol: string; chain: RelationEdge[] }
+    let frontier: Step[] = callEdges
+      .filter((e) => e.target.toLowerCase() === to || e.target.toLowerCase().endsWith('/' + to))
+      .map((edge) => ({ edge, callerSymbol: symbolOfSource(edge), chain: [edge] }))
+    if (frontier.length === 0) {
+      return { paths: [], diagnostics: [{ code: 'no_path', message: `no call path from ${query.target} to ${query.path_to}` }], metadata: this.metadata }
+    }
+    for (let depth1 = 1; depth1 <= depth && frontier.length > 0; depth1++) {
+      const next: Step[] = []
+      for (const step of frontier) {
+        // The caller symbol is the source file's basename (file-symbol bridge).
+        const callerFile = step.edge.source.split('/').pop() ?? step.edge.source
+        if (callerFile.replace(/\.[^.]+$/, '').toLowerCase() === from) {
+          return { paths: [{ edges: step.chain }], diagnostics, metadata: this.metadata }
+        }
+      }
+      for (const step of frontier) {
+        const callers = callEdges.filter(
+          (e) => (e.target.toLowerCase() === step.callerSymbol || e.target.toLowerCase().endsWith('/' + step.callerSymbol)) && !visited.has(keyOfEdge(e)),
+        )
+        for (const edge of callers) {
+          visited.add(keyOfEdge(edge))
+          next.push({ edge, callerSymbol: symbolOfSource(edge), chain: [edge, ...step.chain] })
+        }
+      }
+      frontier = next
+    }
+    return { paths: [], diagnostics: [{ code: 'no_path', message: `no call path from ${query.target} to ${query.path_to} within depth ${depth}` }], metadata: this.metadata }
+  }
+
+  /**
+   * Impact (ticket 4): bounded transitive closure over upstream call
+   * edges. Direct (1 hop) and transitive (2..depth) layers are reported
+   * separately in metadata.impact.
+   */
+  private answerImpact(query: GraphQuery, limit: number): GraphAnswer {
+    const diagnostics: Diagnostic[] = []
+    const requested = query.max_depth ?? IMPACT_DEFAULT_DEPTH
+    const depth = this.clampDepth(requested, diagnostics)
+    const callEdges = this.edges.filter((e) => e.kind === 'call')
+    const target = (query.target ?? '').toLowerCase()
+
+    const { direct, transitive } = upstreamTraversal(callEdges, target, depth)
+    const directNames = [...new Set(direct.map((e) => symbolOfSource(e).split('/').pop()!.replace(/\.[^.]+$/, '')))]
+    const transitiveNames = [...new Set(transitive.map((e) => symbolOfSource(e).split('/').pop()!.replace(/\.[^.]+$/, '')))].filter((n) => !directNames.includes(n))
+
+    const anchor = this.edges.filter((e) => e.kind === 'definition' && (e.target.toLowerCase() === target || e.target.toLowerCase().endsWith('/' + target)))
+    const paths = [...anchor, ...direct, ...transitive].slice(0, limit).map((e) => ({ edges: [e] }))
+    if (anchor.length + direct.length + transitive.length > limit) {
+      diagnostics.push({ code: 'truncated', message: 'impact edges beyond limit' })
+    }
+    return {
+      paths,
+      diagnostics,
+      metadata: { ...this.metadata, impact: { direct: directNames, transitive: transitiveNames, maxDepth: depth } },
+    }
+  }
+
+  /** Clamp a requested depth to the hard cap, with a diagnostic when clamped. */
+  private clampDepth(requested: number, diagnostics: Diagnostic[]): number {
+    if (requested > IMPACT_HARD_CAP) {
+      diagnostics.push({ code: 'partial', message: `max_depth ${requested} clamped to hard cap ${IMPACT_HARD_CAP}` })
+      return IMPACT_HARD_CAP
+    }
+    return Math.max(1, requested)
+  }
+}
+
+/** Caller symbol of a call edge: its source file's basename, extensionless (file-symbol bridge). */
+function symbolOfSource(edge: RelationEdge): string {
+  const base = edge.source.split('/').pop() ?? edge.source
+  return base.replace(/\.[^.]+$/, '').toLowerCase()
+}
+
+function keyOfEdge(edge: RelationEdge): string {
+  return `${edge.source}|${edge.target}|${edge.location.line}`
 }

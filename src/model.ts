@@ -51,6 +51,7 @@ export type DiagnosticCode =
   | 'indexing'
   | 'truncated'
   | 'invalid_mode'
+  | 'no_path'
   | 'file_oversize'
   | 'file_binary'
   | 'file_decode_failed'
