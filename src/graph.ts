@@ -31,7 +31,7 @@ export interface ImpactLayers {
 }
 
 export interface IndexMetadata {
-  capabilities: Record<string, { stage: 'P1'; precision: string }>
+  capabilities: Record<string, { stage: 'P1' | 'P2'; precision: string }>
   index: {
     status: 'built' | 'reused' | 'rebuilt' | 'incremental' | 'indexing'
     files: number
@@ -152,6 +152,12 @@ export class ProjectGraph {
         go: { stage: 'P1', precision: 'syntax+inferred' },
         rust: { stage: 'P1', precision: 'syntax+inferred' },
         java: { stage: 'P1', precision: 'syntax+inferred' },
+        c: { stage: 'P2', precision: 'syntax+inferred' },
+        cpp: { stage: 'P2', precision: 'syntax+inferred' },
+        csharp: { stage: 'P2', precision: 'syntax+inferred' },
+        php: { stage: 'P2', precision: 'syntax+heuristic' },
+        ruby: { stage: 'P2', precision: 'syntax+heuristic' },
+        bash: { stage: 'P2', precision: 'syntax+heuristic' },
       },
       index: { status: 'built', files: 0 },
     }
