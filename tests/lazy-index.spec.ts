@@ -79,8 +79,12 @@ describe('lazy index (ticket 2)', () => {
     const snap = JSON.parse(readFileSync(store, 'utf8'))
     snap.schemaVersion = 999
     writeFileSync(store, JSON.stringify(snap))
-    const third = await explore(ctx, { mode: 'callers', target: 'one' })
-    expect((third.metadata as { index: { status: string } }).index.status).toBe('rebuilt')
+    // Version validation happens at snapshot load; a fresh session (new
+    // ProjectGraph, as the executor does for a new process) must rebuild.
+    const { ProjectGraph } = await import('../src/graph.ts')
+    const fresh = new ProjectGraph(root)
+    const answer = fresh.answer({ mode: 'callers', target: 'one' })
+    expect((answer.metadata as { index: { status: string } }).index.status).toBe('rebuilt')
   })
 
   it('scan respects ignore rules: dependency/build/cache dirs are absent', async () => {

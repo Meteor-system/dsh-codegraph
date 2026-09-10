@@ -8,7 +8,7 @@
 
 import type { CodeGraphProjectConfig, FakeContext } from './contract.ts'
 import type { Diagnostic } from './model.ts'
-import { ProjectGraph } from './graph.ts'
+import { graphFor } from './graph.ts'
 
 export const name = 'dsh-codegraph'
 
@@ -97,6 +97,7 @@ export function activate(ctx: FakeContext): void {
         limit: { type: 'integer', minimum: 1, maximum: RESULT_HARD_CAP, default: RESULT_DEFAULT_LIMIT },
         include_snippets: { type: 'boolean' },
         path_to: { type: 'string', description: 'reachability only: the symbol the path must arrive at' },
+        refresh_timeout_ms: { type: 'integer', description: 'bound the index refresh wait; exceeded returns indexing status' },
       },
       required: ['mode', 'target'],
     },
@@ -112,22 +113,26 @@ export function activate(ctx: FakeContext): void {
           metadata: { capabilities: P1_CAPABILITIES, index: { status: 'empty' } },
         }
       }
-      const graph = new ProjectGraph(config.projectRoot)
-      const answer = graph.answer({
-        mode: args.mode,
-        target: args.target,
-        relation: args.relation as never,
-        limit: args.limit,
-        max_depth: args.max_depth,
-        path_to: args.path_to,
-      })
+      const graph = graphFor(config.projectRoot)
+      const answer = await graph.answerWithTimeout(
+        {
+          mode: args.mode,
+          target: args.target,
+          relation: args.relation as never,
+          limit: args.limit,
+          max_depth: args.max_depth,
+          path_to: args.path_to,
+          refresh_timeout_ms: (input as { refresh_timeout_ms?: number }).refresh_timeout_ms,
+        },
+        (input as { refresh_timeout_ms?: number }).refresh_timeout_ms,
+      )
       return {
         mode: args.mode,
         paths: answer.paths,
         diagnostics: [...answer.diagnostics],
         metadata: {
           capabilities: answer.metadata.capabilities,
-          index: { status: answer.metadata.index.status },
+          index: { ...answer.metadata.index },
           impact: answer.metadata.impact,
         },
       }

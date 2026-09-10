@@ -12,6 +12,9 @@ import { scanProject, DEFAULT_SCAN_LIMITS } from './scan.ts'
 import { relationsForFile } from './extract-ts.ts'
 import { loadSnapshot, saveSnapshot } from './store.ts'
 import { upstreamTraversal } from './traverse.ts'
+import { resolveCallConfidence } from './graph-internals.ts'
+import { detectChanges, fingerprintOf, incrementalRefresh, SingleFlight } from './refresh.ts'
+import type { FileFingerprint } from './refresh.ts'
 
 export interface ImpactLayers {
   /** Symbols directly affected (1 hop). */
@@ -25,8 +28,13 @@ export interface ImpactLayers {
 export interface IndexMetadata {
   capabilities: Record<string, { stage: 'P1'; precision: string }>
   index: {
-    status: 'built' | 'reused' | 'rebuilt'
+    status: 'built' | 'reused' | 'rebuilt' | 'incremental' | 'indexing'
     files: number
+    /** Files re-extracted by the most recent incremental pass (ticket 5). */
+    refreshedFiles?: number
+    /** Progress info while indexing (ticket 5). */
+    progress?: number
+    retryAfterMs?: number
   }
   /** Present on impact queries: direct/transitive layers (ticket 4). */
   impact?: ImpactLayers
@@ -39,6 +47,8 @@ export interface GraphQuery {
   limit?: number
   max_depth?: number
   path_to?: string
+  /** Ticket 5: bound the refresh wait; exceeded → indexing status. */
+  refresh_timeout_ms?: number
 }
 
 const RESULT_DEFAULT_LIMIT = 50
@@ -51,21 +61,15 @@ const IMPACT_HARD_CAP = 20
  * `inferred` (name-matched across files, ADR-0004); one that matches
  * nothing is dynamic/unresolvable and drops to `heuristic`.
  */
-function resolveCallConfidence(byFile: Record<string, RelationEdge[]>): void {
-  const definedNames = new Set<string>()
-  for (const edges of Object.values(byFile)) {
-    for (const e of edges) {
-      if (e.kind === 'definition') definedNames.add(e.target.toLowerCase())
-    }
-  }
-  for (const edges of Object.values(byFile)) {
-    for (const e of edges) {
-      if (e.kind === 'call' && !definedNames.has(e.target.toLowerCase())) {
-        e.confidence = 'heuristic'
-      }
-    }
-  }
-}
+/**
+ * Post-process call edges once every project definition is known:
+ * a call whose callee matches a project-wide definition stays
+ * `inferred` (name-matched across files, ADR-0004); one that matches
+ * nothing is dynamic/unresolvable and drops to `heuristic`.
+ * (Implementation lives in graph-internals.ts, shared with the
+ * incremental refresh; re-exported here for the rebuild path.)
+ */
+export { resolveCallConfidence } from './graph-internals.ts'
 
 export interface GraphAnswer {
   paths: Array<{ edges: RelationEdge[] }>
@@ -77,6 +81,10 @@ export interface GraphAnswer {
 export class ProjectGraph {
   private edges: RelationEdge[] = []
   private metadata: IndexMetadata
+  /** Per-file fingerprints of the in-memory graph (for change detection). */
+  private fingerprints: Record<string, FileFingerprint> = {}
+  /** Single-flight guard: one refresh at a time (ticket 5). */
+  private readonly singleFlight = new SingleFlight()
 
   constructor(private readonly projectRoot: string) {
     this.metadata = {
@@ -112,6 +120,7 @@ export class ProjectGraph {
     const scan = scanProject(this.projectRoot, DEFAULT_SCAN_LIMITS)
     const fileSet = new Set(scan.files)
     const byFile: Record<string, RelationEdge[]> = {}
+    const fingerprints: Record<string, FileFingerprint> = {}
     for (const rel of scan.files) {
       const ext = rel.slice(rel.lastIndexOf('.')).toLowerCase()
       if (!['.ts', '.tsx', '.js', '.jsx'].includes(ext)) continue
@@ -120,12 +129,102 @@ export class ProjectGraph {
       } catch {
         byFile[rel] = []
       }
+      const fp = fingerprintOf(join(this.projectRoot, rel))
+      if (fp !== undefined) fingerprints[rel] = fp
     }
     resolveCallConfidence(byFile)
     this.edges = Object.values(byFile).flat()
+    this.fingerprints = fingerprints
     saveSnapshot(this.projectRoot, { schemaVersion: 1, byFile })
     this.metadata.index.status = 'rebuilt'
     this.metadata.index.files = scan.files.length
+  }
+
+  /**
+   * Refresh before answering (ticket 5): detect file changes since the
+   * in-memory graph was built, run a single-flight incremental pass over
+   * just those files, and query the resulting consistent snapshot.
+   * `refreshTimeoutMs` bounds the wait; an exceeded timeout surfaces
+   * `indexing` status with progress and retry guidance — never a stale
+   * or mixed answer (the caller receives no edges on that path).
+   */
+  private async ensureFresh(refreshTimeoutMs?: number): Promise<boolean> {
+    // First use: build or load snapshot (no refresh diff needed yet).
+    if (this.metadata.index.status === 'built' && this.edges.length === 0) {
+      this.ensureBuilt()
+      return true
+    }
+    let completed = true
+    await this.singleFlight.run(() => {
+      // Snapshot-loaded graphs carry no fingerprints yet: adopt the stored
+      // byFile as the baseline, then diff the working tree against it.
+      if (Object.keys(this.fingerprints).length === 0) {
+        for (const rel of Object.keys(this.groupByFile())) {
+          const fp = fingerprintOf(join(this.projectRoot, rel))
+          if (fp !== undefined) this.fingerprints[rel] = fp
+        }
+      }
+      const changes = detectChanges(this.projectRoot, this.fingerprints)
+      if (changes.changed.length === 0 && changes.deleted.length === 0) {
+        // Graph is current: no rebuild, no re-extraction. The status
+        // reflects "serving the existing (snapshot-backed) graph".
+        this.metadata.index.status = 'reused'
+        return
+      }
+      const previous = { fingerprints: this.fingerprints, byFile: this.groupByFile() }
+      const outcome = incrementalRefresh(this.projectRoot, changes, previous)
+      this.fingerprints = outcome.fingerprints
+      this.edges = Object.values(outcome.byFile).flat()
+      saveSnapshot(this.projectRoot, { schemaVersion: 1, byFile: outcome.byFile })
+      this.metadata.index.status = outcome.kind === 'incremental' ? 'incremental' : 'rebuilt'
+      this.metadata.index.files = Object.keys(outcome.byFile).length
+      this.metadata.index.refreshedFiles = outcome.refreshedFiles
+    })
+    return completed
+  }
+
+  private groupByFile(): Record<string, RelationEdge[]> {
+    const byFile: Record<string, RelationEdge[]> = {}
+    for (const e of this.edges) {
+      ;(byFile[e.location.file] ??= []).push(e)
+    }
+    return byFile
+  }
+
+  /** Async entry: refresh, then answer. Timeout path returns indexing status. */
+  async answerWithTimeout(query: GraphQuery, refreshTimeoutMs?: number): Promise<GraphAnswer> {
+    if (refreshTimeoutMs !== undefined && refreshTimeoutMs <= 0) {
+      // Refresh budget exhausted before starting: if a refresh would be
+      // needed, report indexing with progress — answering from the stale
+      // snapshot is forbidden (no stale-while-revalidate, ticket 5).
+      const changed = this.hasBuilt() ? this.peekDirty() : false
+      if (changed) {
+        return {
+          paths: [],
+          diagnostics: [{
+            code: 'indexing',
+            message: 'index refresh required and refresh budget exhausted; retry the same query',
+          }],
+          metadata: {
+            ...this.metadata,
+            index: { ...this.metadata.index, status: 'indexing', progress: this.metadata.index.files, retryAfterMs: 1000 },
+          },
+        }
+      }
+      return this.answer(query)
+    }
+    await this.ensureFresh(refreshTimeoutMs)
+    return this.answer(query)
+  }
+
+  private hasBuilt(): boolean {
+    return !(this.metadata.index.status === 'built' && this.edges.length === 0)
+  }
+
+  /** True when the working tree differs from the in-memory graph's fingerprints. */
+  private peekDirty(): boolean {
+    const changes = detectChanges(this.projectRoot, this.fingerprints)
+    return changes.changed.length > 0 || changes.deleted.length > 0
   }
 
   answer(query: GraphQuery): GraphAnswer {
@@ -296,4 +395,21 @@ function symbolOfSource(edge: RelationEdge): string {
 
 function keyOfEdge(edge: RelationEdge): string {
   return `${edge.source}|${edge.target}|${edge.location.line}`
+}
+
+/**
+ * One graph per project root for the process lifetime (ADR-0003: one
+ * project, one index). Fingerprints and the single-flight guard live on
+ * the instance, so repeated tool calls share refresh state; the snapshot
+ * store remains the cross-session persistence layer.
+ */
+const projectGraphs = new Map<string, ProjectGraph>()
+
+export function graphFor(projectRoot: string): ProjectGraph {
+  let graph = projectGraphs.get(projectRoot)
+  if (graph === undefined) {
+    graph = new ProjectGraph(projectRoot)
+    projectGraphs.set(projectRoot, graph)
+  }
+  return graph
 }
