@@ -19,6 +19,7 @@ import { resolveCallConfidence } from './graph-internals.ts'
 import { detectChanges, fingerprintOf, incrementalRefresh, SingleFlight } from './refresh.ts'
 import type { FileFingerprint } from './refresh.ts'
 import { discoverPackages, packageOf } from './packages.ts'
+import { relationsForWasmFile, isWasmLanguage } from './extract-wasm.ts'
 
 export interface ImpactLayers {
   /** Symbols directly affected (1 hop). */
@@ -134,6 +135,10 @@ export class ProjectGraph {
   private overrides: Record<string, unknown>
   /** Scan-level deviations from the most recent build (ticket 7). */
   private scanDiagnostics: Diagnostic[] = []
+  /** WASM-language files awaiting async extraction (ticket 9). */
+  private wasmFiles: string[] = []
+  /** True once the current wasmFiles batch has been extracted (or there was none). */
+  private wasmExtracted = false
 
   constructor(private readonly projectRoot: string, overrides?: Record<string, unknown>) {
     this.overrides = overrides ?? {}
@@ -189,12 +194,17 @@ export class ProjectGraph {
     const packages = discoverPackages(this.projectRoot)
     const byFile: Record<string, RelationEdge[]> = {}
     const fingerprints: Record<string, FileFingerprint> = {}
+    const wasmFiles: string[] = []
     for (const rel of scan.files) {
       const ext = rel.slice(rel.lastIndexOf('.')).toLowerCase()
-      // TS-family extraction covers .mjs/.cjs too (plain ES/CommonJS modules).
-      if (!TS_FAMILY_EXTENSIONS.has(ext) && !limits.include?.some((g) => rel.toLowerCase().endsWith(g.replace('**/*', '.')))) continue
+      const included = limits.include?.some((g) => rel.toLowerCase().endsWith(g.replace('**/*', '.'))) ?? false
+      if (!TS_FAMILY_EXTENSIONS.has(ext) && !isWasmLanguage(ext) && !included) continue
       try {
-        byFile[rel] = relationsForFile(join(this.projectRoot, rel), rel, fileSet, packages)
+        if (TS_FAMILY_EXTENSIONS.has(ext)) {
+          byFile[rel] = relationsForFile(join(this.projectRoot, rel), rel, fileSet, packages)
+        } else if (isWasmLanguage(ext)) {
+          wasmFiles.push(rel)
+        }
       } catch {
         byFile[rel] = []
       }
@@ -204,6 +214,8 @@ export class ProjectGraph {
     resolveCallConfidence(byFile)
     this.edges = Object.values(byFile).flat()
     this.fingerprints = fingerprints
+    this.wasmFiles = wasmFiles
+    this.wasmExtracted = false
     saveSnapshot(this.projectRoot, { schemaVersion: 1, byFile, scanShapeHash: this.scanShapeHash() })
     this.metadata.index.status = 'rebuilt'
     this.metadata.index.files = scan.files.length
@@ -260,6 +272,11 @@ export class ProjectGraph {
       this.metadata.index.status = outcome.kind === 'incremental' ? 'incremental' : 'rebuilt'
       this.metadata.index.files = Object.keys(outcome.byFile).length
       this.metadata.index.refreshedFiles = outcome.refreshedFiles
+      const wasmChanged = changes.changed.filter((rel) => isWasmLanguage(rel.slice(rel.lastIndexOf('.')).toLowerCase()))
+      if (wasmChanged.length > 0) {
+        this.wasmFiles = wasmChanged
+        this.wasmExtracted = false
+      }
     })
     return completed
   }
@@ -280,7 +297,8 @@ export class ProjectGraph {
       // needed, report indexing with progress — answering from a stale
       // graph is forbidden (no stale-while-revalidate, ticket 5/7).
       const changed = this.hasBuilt() ? this.peekDirty() : true
-      if (changed) {
+      const wasmPending = !this.wasmExtracted && this.wasmFiles.length > 0
+      if (changed || wasmPending) {
         return {
           paths: [],
           candidates: [],
@@ -299,7 +317,35 @@ export class ProjectGraph {
       return this.answer(query)
     }
     await this.ensureFresh(refreshTimeoutMs)
+    await this.ensureWasmExtracted()
     return this.answer(query)
+  }
+
+  /** Async extraction of queued WASM-language files (ticket 9). */
+  private async ensureWasmExtracted(): Promise<void> {
+    if (this.wasmExtracted || this.wasmFiles.length === 0) return
+    this.wasmExtracted = true
+    const pending = [...this.wasmFiles]
+    const fileSet = new Set(Object.keys(this.groupByFile()).concat(pending))
+    const packages = discoverPackages(this.projectRoot)
+    const extra: RelationEdge[] = []
+    for (const rel of pending) {
+      try {
+        const relations = await relationsForWasmFile(join(this.projectRoot, rel), rel, fileSet, packages)
+        extra.push(...relations)
+        this.fingerprints[rel] = fingerprintOf(join(this.projectRoot, rel)) ?? { mtimeMs: 0, size: 0 }
+      } catch {
+        this.scanDiagnostics.push({ code: 'partial', message: `extraction failed for ${rel}` })
+      }
+    }
+    this.wasmFiles = []
+    const pendingSet = new Set(pending)
+    this.edges = this.edges.filter((e) => !pendingSet.has(e.location.file))
+    this.edges = [...this.edges, ...extra]
+    const byFile = this.groupByFile()
+    resolveCallConfidence(byFile)
+    this.edges = Object.values(byFile).flat()
+    saveSnapshot(this.projectRoot, { schemaVersion: 1, byFile, scanShapeHash: this.scanShapeHash() })
   }
 
   private hasBuilt(): boolean {
