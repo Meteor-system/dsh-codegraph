@@ -29,6 +29,8 @@ export interface ExtractedSymbol {
 export interface ExtractedFile {
   symbols: ExtractedSymbol[]
   imports: Array<{ specifier: string; line: number; col: number }>
+  /** Call expressions: callee name + position (resolution happens per-file-set). */
+  calls: Array<{ callee: string; line: number; col: number }>
 }
 
 export function extractTsFamily(absPath: string, relPath: string): ExtractedFile {
@@ -36,6 +38,7 @@ export function extractTsFamily(absPath: string, relPath: string): ExtractedFile
   const sf = ts.createSourceFile(relPath, text, ts.ScriptTarget.ES2022, true, scriptKindOf(relPath))
   const symbols: ExtractedSymbol[] = []
   const imports: ExtractedFile['imports'] = []
+  const calls: ExtractedFile['calls'] = []
 
   const lineOf = (node: ts.Node): { line: number; col: number } => {
     const pos = sf.getLineAndCharacterOfPosition(node.getStart(sf))
@@ -68,12 +71,21 @@ export function extractTsFamily(absPath: string, relPath: string): ExtractedFile
     } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
       const at = lineOf(node)
       imports.push({ specifier: node.moduleSpecifier.text, line: at.line, col: at.col })
+    } else if (ts.isCallExpression(node)) {
+      const expr = node.expression
+      let callee: string | undefined
+      if (ts.isIdentifier(expr)) callee = expr.text
+      else if (ts.isPropertyAccessExpression(expr)) callee = expr.name.text
+      if (callee !== undefined) {
+        const at = lineOf(node)
+        calls.push({ callee, line: at.line, col: at.col })
+      }
     }
     ts.forEachChild(node, visit)
   }
   ts.forEachChild(sf, visit)
 
-  return { symbols, imports }
+  return { symbols, imports, calls }
 }
 
 /**
@@ -97,7 +109,16 @@ export interface ExtractedRelation {
   location: { file: string; line: number; col: number }
 }
 
-/** Extract definition + import relations for one file. */
+/**
+ * Extract definition + import + call relations for one file.
+ *
+ * Call resolution (syntax-level, no type checker — ADR-0005):
+ * - same-file definition match → `exact` call edge (target = symbol name);
+ * - name imported from a resolved local module → `inferred` call edge
+ *   (target = "file:symbol" identity of the defining module);
+ * - anything else (dynamic dispatch, globals) → `heuristic` edge on the
+ *   source file, so unresolvable calls surface without pretending proof.
+ */
 export function relationsForFile(absPath: string, relPath: string, projectFiles: ReadonlySet<string>): ExtractedRelation[] {
   const extracted = extractTsFamily(absPath, relPath)
   const relations: ExtractedRelation[] = extracted.symbols.map((s) => ({
@@ -118,6 +139,18 @@ export function relationsForFile(absPath: string, relPath: string, projectFiles:
         location: { file: relPath, line: imp.line, col: imp.col },
       })
     }
+  }
+  for (const call of extracted.calls) {
+    const sameFile = extracted.symbols.some((s) => s.name === call.callee)
+    const at = { file: relPath, line: call.line, col: call.col }
+    if (sameFile) {
+      relations.push({ kind: 'call', source: relPath, target: call.callee, confidence: 'exact', location: at })
+      continue
+    }
+    // Imported or unresolved: defer confidence to the graph layer, which
+    // knows all project definitions. Emit the raw call edge with the
+    // callee name; the graph upgrades/labels it.
+    relations.push({ kind: 'call', source: relPath, target: call.callee, confidence: 'inferred', location: at })
   }
   return relations
 }
