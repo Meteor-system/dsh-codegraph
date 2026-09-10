@@ -55,6 +55,10 @@ export type { DiagnosticCode, Diagnostic } from './model.ts'
 export interface ExploreResponse {
   mode: string
   paths: unknown[]
+  /** Ranked candidates when the target is ambiguous (never a silent pick). */
+  candidates: Array<{ name: string; path: string; language: string; line: number }>
+  truncated: boolean
+  total: number
   diagnostics: Diagnostic[]
   metadata: {
     capabilities: Record<string, { stage: 'P1' | 'P2' | 'P3'; precision: string }>
@@ -109,26 +113,35 @@ export function activate(ctx: FakeContext): void {
         return {
           mode: args.mode ?? '',
           paths: [],
+          candidates: [],
+          truncated: false,
+          total: 0,
           diagnostics: [{ code: 'invalid_mode' as const, message: `mode must be one of ${MODES.join(', ')}` }],
           metadata: { capabilities: P1_CAPABILITIES, index: { status: 'empty' } },
         }
       }
       const graph = graphFor(config.projectRoot)
+      const raw = input as { refresh_timeout_ms?: number; include_snippets?: boolean; confidence?: string }
       const answer = await graph.answerWithTimeout(
         {
           mode: args.mode,
           target: args.target,
           relation: args.relation as never,
+          confidence: raw.confidence,
           limit: args.limit,
           max_depth: args.max_depth,
           path_to: args.path_to,
-          refresh_timeout_ms: (input as { refresh_timeout_ms?: number }).refresh_timeout_ms,
+          refresh_timeout_ms: raw.refresh_timeout_ms,
+          include_snippets: raw.include_snippets,
         },
-        (input as { refresh_timeout_ms?: number }).refresh_timeout_ms,
+        raw.refresh_timeout_ms,
       )
       return {
         mode: args.mode,
         paths: answer.paths,
+        candidates: answer.candidates,
+        truncated: answer.truncated,
+        total: answer.total,
         diagnostics: [...answer.diagnostics],
         metadata: {
           capabilities: answer.metadata.capabilities,

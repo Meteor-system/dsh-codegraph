@@ -8,6 +8,7 @@
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import type { RelationEdge, RelationKind, Diagnostic } from './model.ts'
+import { SNIPPET_LINE_MAX_CHARS, SNIPPET_MAX_LINES } from './model.ts'
 import { scanProject, DEFAULT_SCAN_LIMITS } from './scan.ts'
 import { relationsForFile } from './extract-ts.ts'
 import { loadSnapshot, saveSnapshot } from './store.ts'
@@ -44,14 +45,49 @@ export interface GraphQuery {
   mode: string
   target?: string
   relation?: RelationKind
+  confidence?: string
   limit?: number
   max_depth?: number
   path_to?: string
   /** Ticket 5: bound the refresh wait; exceeded → indexing status. */
   refresh_timeout_ms?: number
+  /** Ticket 6: attach 1–3 locating lines per evidence edge. */
+  include_snippets?: boolean
+}
+
+/** Ranked candidate for an ambiguous target (ADR-0004: never a silent pick). */
+export interface SymbolCandidate {
+  name: string
+  path: string
+  language: string
+  line: number
+}
+
+export interface GraphAnswer {
+  paths: Array<{ edges: RelationEdge[] }>
+  /** Non-empty only when the target was ambiguous; the agent disambiguates. */
+  candidates: SymbolCandidate[]
+  truncated: boolean
+  total: number
+  diagnostics: Diagnostic[]
+  metadata: IndexMetadata
+}
+
+/** Language label from a file extension (candidates carry it per ADR-0004). */
+function languageOfPath(path: string): string {
+  const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
+  const labels: Record<string, string> = {
+    ts: 'typescript', tsx: 'tsx', js: 'javascript', jsx: 'jsx',
+    py: 'python', go: 'go', rs: 'rust', java: 'java',
+    c: 'c', cpp: 'cpp', cc: 'cpp', h: 'c', hpp: 'cpp',
+    cs: 'csharp', php: 'php', rb: 'ruby', bash: 'bash', sh: 'bash',
+    hs: 'haskell', jl: 'julia', scala: 'scala',
+  }
+  return labels[ext] ?? ext
 }
 
 const RESULT_DEFAULT_LIMIT = 50
+const RESULT_HARD_CAP = 200
 const IMPACT_DEFAULT_DEPTH = 5
 const IMPACT_HARD_CAP = 20
 
@@ -201,6 +237,9 @@ export class ProjectGraph {
       if (changed) {
         return {
           paths: [],
+          candidates: [],
+          truncated: false,
+          total: 0,
           diagnostics: [{
             code: 'indexing',
             message: 'index refresh required and refresh budget exhausted; retry the same query',
@@ -229,7 +268,14 @@ export class ProjectGraph {
 
   answer(query: GraphQuery): GraphAnswer {
     this.ensureBuilt()
-    const limit = Math.min(query.limit ?? RESULT_DEFAULT_LIMIT, RESULT_DEFAULT_LIMIT)
+    // Hard cap enforcement with a diagnostic on clamp (ticket 6 AC).
+    const diagnostics: Diagnostic[] = []
+    let requestedLimit = query.limit ?? RESULT_DEFAULT_LIMIT
+    if (requestedLimit > RESULT_HARD_CAP) {
+      diagnostics.push({ code: 'partial', message: `limit ${requestedLimit} clamped to hard cap ${RESULT_HARD_CAP}` })
+      requestedLimit = RESULT_HARD_CAP
+    }
+    const limit = requestedLimit
     // Mode decides the default edge vocabulary (ADR-0002): callers asks
     // about call edges; without an explicit relation filter, definitions
     // of the target itself are included as anchor context.
@@ -240,17 +286,43 @@ export class ProjectGraph {
         : ['definition', 'import']
 
     let edges = this.edges.filter((e) => wanted.includes(e.kind))
+    if (query.confidence !== undefined) {
+      edges = edges.filter((e) => e.confidence === query.confidence)
+    }
     if (query.target !== undefined) {
       const needle = query.target.toLowerCase()
+      // Ambiguity is about definition targets: the same symbol name
+      // defined at several locations (overloads, same-name functions,
+      // cross-package types). Multiple call edges naming one symbol are
+      // normal callers output, not ambiguity (ADR-0004).
+      const definitionLocations = new Set(
+        this.edges
+          .filter((e) => e.kind === 'definition' && (e.target.toLowerCase() === needle || e.target.toLowerCase().endsWith('/' + needle)))
+          .map((e) => `${e.target.toLowerCase()}|${e.location.file.toLowerCase()}`),
+      )
+      if (definitionLocations.size > 1) {
+        const defEdges = this.edges.filter((e) => e.kind === 'definition' && (e.target.toLowerCase() === needle || e.target.toLowerCase().endsWith('/' + needle)))
+        return this.candidateAnswer(defEdges, query, limit)
+      }
       const matching = edges.filter((e) => e.target.toLowerCase() === needle || e.target.toLowerCase().endsWith('/' + needle))
       if (matching.length === 0) {
-        // No exact match: ranked candidates instead of a silent pick.
-        const candidates = this.edges
-          .filter((e) => e.kind === 'definition' && e.target.toLowerCase().includes(needle))
-          .slice(0, limit)
+        // No exact match: substring fallback over definitions AND
+        // heuristic call targets (unresolved calls carry the callee name
+        // as the best lead, ADR-0004).
+        const matchingDefs = this.edges.filter((e) =>
+          (e.kind === 'definition' || (e.kind === 'call' && e.confidence === 'heuristic')) &&
+          e.target.toLowerCase().includes(needle),
+        )
+        if (matchingDefs.length > 1) {
+          return this.candidateAnswer(matchingDefs, query, limit)
+        }
+        const candidates = matchingDefs.slice(0, limit)
         return {
           paths: candidates.map((e) => ({ edges: [e] })),
+          candidates: [],
           diagnostics: [{ code: 'partial', message: 'no exact symbol match; returning ranked candidates' }],
+          truncated: false,
+          total: candidates.length,
           metadata: this.metadata,
         }
       }
@@ -297,12 +369,54 @@ export class ProjectGraph {
     if (query.mode === 'impact') {
       return this.answerImpact(query, limit)
     }
-    const paths = edges.slice(0, limit).map((e) => ({ edges: [e] }))
-    const diagnostics: Diagnostic[] = []
-    if (edges.length > limit) {
-      diagnostics.push({ code: 'truncated', message: `${edges.length - limit} more relations beyond limit` })
+    const total = edges.length
+    const selected = edges.slice(0, limit)
+    if (query.include_snippets === true) {
+      for (const e of selected) this.attachSnippet(e)
     }
-    return { paths, diagnostics, metadata: this.metadata }
+    const paths = selected.map((e) => ({ edges: [e] }))
+    if (total > limit) {
+      diagnostics.push({ code: 'truncated', message: `${total - limit} more relations beyond limit` })
+    }
+    return { paths, candidates: [], truncated: total > limit, total, diagnostics, metadata: this.metadata }
+  }
+
+  /** Ranked candidate list for an ambiguous target (ADR-0004). */
+  private candidateAnswer(matching: RelationEdge[], query: GraphQuery, limit: number): GraphAnswer {
+    const distinct = new Map<string, RelationEdge>()
+    for (const e of matching) {
+      const key = `${e.target.toLowerCase()}|${e.location.file.toLowerCase()}`
+      if (!distinct.has(key)) distinct.set(key, e)
+    }
+    const defs = [...distinct.values()].sort((a, b) => a.location.file.localeCompare(b.location.file))
+    return {
+      paths: [],
+      candidates: defs.slice(0, limit).map((e) => ({
+        name: e.target,
+        path: e.location.file,
+        language: languageOfPath(e.location.file),
+        line: e.location.line,
+      })),
+      diagnostics: [{ code: 'ambiguous_target', message: `${defs.length} symbols match '${query.target}'; disambiguate by path or qualified name` }],
+      truncated: defs.length > limit,
+      total: defs.length,
+      metadata: this.metadata,
+    }
+  }
+
+  /** Attach a 1–3 line locating snippet to an edge (reads the file). */
+  private attachSnippet(edge: RelationEdge): void {
+    try {
+      const abs = join(this.projectRoot, edge.location.file)
+      const allLines = readFileSync(abs, 'utf8').split(/\r?\n/)
+      const start = Math.max(0, edge.location.line - 1)
+      const lines = allLines.slice(start, start + SNIPPET_MAX_LINES).map((l) =>
+        l.length > SNIPPET_LINE_MAX_CHARS ? l.slice(0, SNIPPET_LINE_MAX_CHARS) : l,
+      )
+      edge.snippet = { lines }
+    } catch {
+      // Unreadable file: leave snippet absent rather than fabricating one.
+    }
   }
 
   /**
@@ -324,7 +438,7 @@ export class ProjectGraph {
       .filter((e) => e.target.toLowerCase() === to || e.target.toLowerCase().endsWith('/' + to))
       .map((edge) => ({ edge, callerSymbol: symbolOfSource(edge), chain: [edge] }))
     if (frontier.length === 0) {
-      return { paths: [], diagnostics: [{ code: 'no_path', message: `no call path from ${query.target} to ${query.path_to}` }], metadata: this.metadata }
+      return { paths: [], candidates: [], truncated: false, total: 0, diagnostics: [{ code: 'no_path', message: `no call path from ${query.target} to ${query.path_to}` }], metadata: this.metadata }
     }
     for (let depth1 = 1; depth1 <= depth && frontier.length > 0; depth1++) {
       const next: Step[] = []
@@ -332,7 +446,7 @@ export class ProjectGraph {
         // The caller symbol is the source file's basename (file-symbol bridge).
         const callerFile = step.edge.source.split('/').pop() ?? step.edge.source
         if (callerFile.replace(/\.[^.]+$/, '').toLowerCase() === from) {
-          return { paths: [{ edges: step.chain }], diagnostics, metadata: this.metadata }
+          return { paths: [{ edges: step.chain }], candidates: [], truncated: false, total: step.chain.length, diagnostics, metadata: this.metadata }
         }
       }
       for (const step of frontier) {
@@ -346,7 +460,7 @@ export class ProjectGraph {
       }
       frontier = next
     }
-    return { paths: [], diagnostics: [{ code: 'no_path', message: `no call path from ${query.target} to ${query.path_to} within depth ${depth}` }], metadata: this.metadata }
+    return { paths: [], candidates: [], truncated: false, total: 0, diagnostics: [{ code: 'no_path', message: `no call path from ${query.target} to ${query.path_to} within depth ${depth}` }], metadata: this.metadata }
   }
 
   /**
@@ -366,12 +480,21 @@ export class ProjectGraph {
     const transitiveNames = [...new Set(transitive.map((e) => symbolOfSource(e).split('/').pop()!.replace(/\.[^.]+$/, '')))].filter((n) => !directNames.includes(n))
 
     const anchor = this.edges.filter((e) => e.kind === 'definition' && (e.target.toLowerCase() === target || e.target.toLowerCase().endsWith('/' + target)))
-    const paths = [...anchor, ...direct, ...transitive].slice(0, limit).map((e) => ({ edges: [e] }))
-    if (anchor.length + direct.length + transitive.length > limit) {
+    const all = [...anchor, ...direct, ...transitive]
+    const total = all.length
+    const selected = all.slice(0, limit)
+    if (query.include_snippets === true) {
+      for (const e of selected) this.attachSnippet(e)
+    }
+    const paths = selected.map((e) => ({ edges: [e] }))
+    if (total > limit) {
       diagnostics.push({ code: 'truncated', message: 'impact edges beyond limit' })
     }
     return {
       paths,
+      candidates: [],
+      truncated: total > limit,
+      total,
       diagnostics,
       metadata: { ...this.metadata, impact: { direct: directNames, transitive: transitiveNames, maxDepth: depth } },
     }

@@ -21,7 +21,20 @@ export interface RelationEdge {
   target: string
   confidence: Confidence
   location: SymbolLocation
+  /** Present only when the query sets include_snippets (ticket 6). */
+  snippet?: Snippet
 }
+
+/** 1–3 locating lines from the edge's file; long lines truncated. */
+export interface Snippet {
+  lines: string[]
+}
+
+/** Max snippet line length (ADR-0004: lines > 10,000 chars are cut). */
+export const SNIPPET_LINE_MAX_CHARS = 10_000
+
+/** Lines fetched per snippet (ADR-0004: 1–3 locating lines). */
+export const SNIPPET_MAX_LINES = 3
 
 export interface RelationPath {
   edges: RelationEdge[]
@@ -52,6 +65,7 @@ export type DiagnosticCode =
   | 'truncated'
   | 'invalid_mode'
   | 'no_path'
+  | 'ambiguous_target'
   | 'file_oversize'
   | 'file_binary'
   | 'file_decode_failed'
