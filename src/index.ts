@@ -7,6 +7,8 @@
  */
 
 import type { CodeGraphProjectConfig, FakeContext } from './contract.ts'
+import type { Diagnostic } from './model.ts'
+import { ProjectGraph } from './graph.ts'
 
 export const name = 'dsh-codegraph'
 
@@ -46,22 +48,8 @@ const TOOL_DESCRIPTION = [
   'Diagnostics vocabulary: partial, unsupported_language, indexing, truncated, plus file-skip reasons.',
 ].join(' ')
 
-/** Diagnostics codes are a closed enumeration (ADR-0004: no ad-hoc strings). */
-export type DiagnosticCode =
-  | 'partial'
-  | 'unsupported_language'
-  | 'indexing'
-  | 'truncated'
-  | 'invalid_mode'
-  | 'file_oversize'
-  | 'file_binary'
-  | 'file_decode_failed'
-  | 'file_count_stop'
-
-export interface Diagnostic {
-  code: DiagnosticCode
-  message: string
-}
+/** Diagnostics vocabulary lives in the model (ADR-0004); re-exported for consumers. */
+export type { DiagnosticCode, Diagnostic } from './model.ts'
 
 /** Empty contract-shaped response body, shared by this ticket's smoke path. */
 export interface ExploreResponse {
@@ -110,24 +98,31 @@ export function activate(ctx: FakeContext): void {
       required: ['mode', 'target'],
     },
     execute: async (input: unknown): Promise<ExploreResponse> => {
-      const args = input as { mode?: string }
+      const args = input as { mode?: string; target?: string; relation?: string; limit?: number }
       // No silent fallback: an out-of-enum mode is a diagnostic, never a
       // coerced answer (spec: partial results + diagnostics beat guesses).
       if (args.mode === undefined || !(MODES as readonly string[]).includes(args.mode)) {
         return {
           mode: args.mode ?? '',
           paths: [],
-          diagnostics: [{ code: 'invalid_mode', message: `mode must be one of ${MODES.join(', ')}` }],
+          diagnostics: [{ code: 'invalid_mode' as const, message: `mode must be one of ${MODES.join(', ')}` }],
           metadata: { capabilities: P1_CAPABILITIES, index: { status: 'empty' } },
         }
       }
+      const graph = new ProjectGraph(config.projectRoot)
+      const answer = graph.answer({
+        mode: args.mode,
+        target: args.target,
+        relation: args.relation as never,
+        limit: args.limit,
+      })
       return {
         mode: args.mode,
-        paths: [],
-        diagnostics: [],
+        paths: answer.paths,
+        diagnostics: [...answer.diagnostics],
         metadata: {
-          capabilities: P1_CAPABILITIES,
-          index: { status: 'empty' },
+          capabilities: answer.metadata.capabilities,
+          index: { status: answer.metadata.index.status },
         },
       }
     },

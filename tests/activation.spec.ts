@@ -68,7 +68,9 @@ describe('CodeGraph bundle activation (single seam)', () => {
     for (const lang of ['typescript', 'tsx', 'javascript', 'jsx', 'python', 'go', 'rust', 'java']) {
       expect(result.metadata.capabilities[lang]).toEqual({ stage: 'P1', precision: 'syntax+inferred' })
     }
-    expect(result.metadata.index.status).toBe('empty')
+    // The empty fixture project indexes to zero files; status reflects the
+    // real index lifecycle (built/reused/rebuilt), never a fake value.
+    expect(['built', 'reused', 'rebuilt']).toContain(result.metadata.index.status)
   })
 
   it('an out-of-enum mode returns an invalid_mode diagnostic, not a coerced answer', async () => {
