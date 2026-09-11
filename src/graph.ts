@@ -31,7 +31,7 @@ export interface ImpactLayers {
 }
 
 export interface IndexMetadata {
-  capabilities: Record<string, { stage: 'P1' | 'P2'; precision: string }>
+  capabilities: Record<string, { stage: 'P1' | 'P2' | 'P3'; precision: string }>
   index: {
     status: 'built' | 'reused' | 'rebuilt' | 'incremental' | 'indexing'
     files: number
@@ -158,6 +158,10 @@ export class ProjectGraph {
         php: { stage: 'P2', precision: 'syntax+heuristic' },
         ruby: { stage: 'P2', precision: 'syntax+heuristic' },
         bash: { stage: 'P2', precision: 'syntax+heuristic' },
+        haskell: { stage: 'P3', precision: 'syntax+inferred' },
+        julia: { stage: 'P3', precision: 'syntax+inferred' },
+        scala: { stage: 'P3', precision: 'syntax+inferred' },
+        razor: { stage: 'P3', precision: 'markup-reduced' },
       },
       index: { status: 'built', files: 0 },
     }
@@ -201,9 +205,14 @@ export class ProjectGraph {
     const byFile: Record<string, RelationEdge[]> = {}
     const fingerprints: Record<string, FileFingerprint> = {}
     const wasmFiles: string[] = []
+    const razorFiles: string[] = []
     for (const rel of scan.files) {
       const ext = rel.slice(rel.lastIndexOf('.')).toLowerCase()
       const included = limits.include?.some((g) => rel.toLowerCase().endsWith(g.replace('**/*', '.'))) ?? false
+      if (ext === '.razor') {
+        razorFiles.push(rel)
+        continue
+      }
       if (!TS_FAMILY_EXTENSIONS.has(ext) && !isWasmLanguage(ext) && !included) continue
       try {
         if (TS_FAMILY_EXTENSIONS.has(ext)) {
@@ -235,6 +244,12 @@ export class ProjectGraph {
     const scanDiags: Diagnostic[] = scan.skips.map((s) => ({ code: s.code, message: s.message }))
     if (scan.stoppedEarly) {
       scanDiags.push({ code: 'file_count_stop', message: `scan stopped at ${limits.maxFiles} files; raise max_files to index more` })
+    }
+    for (const rel of razorFiles) {
+      scanDiags.push({
+        code: 'unsupported_language',
+        message: `Razor ships reduced (markup-level) capability; ${rel} was not extracted. Build the grammar WASM via scripts/build-razor-wasm.md to enable extraction.`,
+      })
     }
     this.scanDiagnostics = scanDiags
   }

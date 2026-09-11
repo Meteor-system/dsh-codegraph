@@ -24,7 +24,7 @@ const RESULT_DEFAULT_LIMIT = 50
 const RESULT_HARD_CAP = 200
 
 /** Languages committed for shipped stages (spec: capability stages P1–P2). */
-const P1_CAPABILITIES: Record<string, { stage: 'P1' | 'P2'; precision: string }> = {
+const P1_CAPABILITIES: Record<string, { stage: 'P1' | 'P2' | 'P3'; precision: string }> = {
   typescript: { stage: 'P1', precision: 'syntax+inferred' },
   tsx: { stage: 'P1', precision: 'syntax+inferred' },
   javascript: { stage: 'P1', precision: 'syntax+inferred' },
@@ -39,6 +39,10 @@ const P1_CAPABILITIES: Record<string, { stage: 'P1' | 'P2'; precision: string }>
   php: { stage: 'P2', precision: 'syntax+heuristic' },
   ruby: { stage: 'P2', precision: 'syntax+heuristic' },
   bash: { stage: 'P2', precision: 'syntax+heuristic' },
+  haskell: { stage: 'P3', precision: 'syntax+inferred' },
+  julia: { stage: 'P3', precision: 'syntax+inferred' },
+  scala: { stage: 'P3', precision: 'syntax+inferred' },
+  razor: { stage: 'P3', precision: 'markup-reduced' },
 }
 
 const TOOL_DESCRIPTION = [

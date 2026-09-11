@@ -76,6 +76,9 @@ const WASM_LANGUAGES: Record<string, { pkg: string; ext: string; wasm?: string }
   '.rb': { pkg: 'tree-sitter-ruby', ext: 'ruby' },
   '.sh': { pkg: 'tree-sitter-bash', ext: 'bash' },
   '.bash': { pkg: 'tree-sitter-bash', ext: 'bash' },
+  '.hs': { pkg: 'tree-sitter-haskell', ext: 'haskell' },
+  '.jl': { pkg: 'tree-sitter-julia', ext: 'julia' },
+  '.scala': { pkg: 'tree-sitter-scala', ext: 'scala' },
 }
 
 export function isWasmLanguage(ext: string): boolean {
@@ -483,6 +486,93 @@ const EXTRACTORS: Record<string, (root: TSNode) => LangExtraction> = {
   php: extractPhp,
   ruby: extractRuby,
   bash: extractBash,
+  haskell: extractHaskell,
+  julia: extractJulia,
+  scala: extractScala,
+}
+
+/** Scala: defs, calls, class/object extends. */
+function extractScala(root: TSNode): LangExtraction {
+  const out = emptyExtraction()
+  const visit = (node: TSNode): void => {
+    const at = pos(node)
+    if (node.type === 'function_definition') {
+      const name = childOfType(node, 'identifier')
+      if (name !== undefined) out.symbols.push({ name: nodeText(name), kind: 'definition', line: at.line, col: at.col })
+    } else if (node.type === 'class_definition' || node.type === 'object_definition' || node.type === 'trait_definition') {
+      const name = childOfType(node, 'identifier')
+      if (name !== undefined) {
+        out.symbols.push({ name: nodeText(name), kind: 'definition', line: at.line, col: at.col })
+        const ext = childOfType(node, 'extends_clause')
+        if (ext !== undefined) {
+          const parent = childOfTypeDeep(ext, 'type_identifier') ?? childOfTypeDeep(ext, 'identifier')
+          if (parent !== undefined) {
+            out.inherits.push({ child: nodeText(name), parent: nodeText(parent), line: at.line, col: at.col, confidence: 'exact' })
+          }
+        }
+      }
+    } else if (node.type === 'call_expression') {
+      const fn = childOfType(node, 'identifier') ?? childAt(node, 0)
+      if (fn !== undefined && fn.type === 'identifier') {
+        out.calls.push({ callee: nodeText(fn), line: at.line, col: at.col })
+      } else if (fn !== undefined) {
+        const id = childOfTypeDeep(fn, 'identifier')
+        if (id !== undefined) out.calls.push({ callee: nodeText(id), line: at.line, col: at.col })
+      }
+    }
+    for (let i = 0; i < node.childCount; i++) {
+      const c = childAt(node, i)
+      if (c !== undefined) visit(c)
+    }
+  }
+  visit(root)
+  return out
+}
+
+/** Julia: function definitions and call expressions. */
+function extractJulia(root: TSNode): LangExtraction {
+  const out = emptyExtraction()
+  const visit = (node: TSNode): void => {
+    const at = pos(node)
+    if (node.type === 'function_definition') {
+      const name = childOfTypeDeep(node, 'identifier')
+      if (name !== undefined) out.symbols.push({ name: nodeText(name), kind: 'definition', line: at.line, col: at.col })
+    } else if (node.type === 'call_expression') {
+      const fn = childOfType(node, 'identifier') ?? childAt(node, 0)
+      if (fn !== undefined && fn.type === 'identifier') {
+        out.calls.push({ callee: nodeText(fn), line: at.line, col: at.col })
+      }
+    }
+    for (let i = 0; i < node.childCount; i++) {
+      const c = childAt(node, i)
+      if (c !== undefined) visit(c)
+    }
+  }
+  visit(root)
+  return out
+}
+
+/** Haskell: function bindings and apply expressions. */
+function extractHaskell(root: TSNode): LangExtraction {
+  const out = emptyExtraction()
+  const visit = (node: TSNode): void => {
+    const at = pos(node)
+    if (node.type === 'function') {
+      const name = childOfType(node, 'variable') ?? childOfTypeDeep(node, 'variable')
+      if (name !== undefined) out.symbols.push({ name: nodeText(name), kind: 'definition', line: at.line, col: at.col })
+    } else if (node.type === 'apply') {
+      const fn = childOfType(node, 'variable') ?? childAt(node, 0)
+      if (fn !== undefined && (fn.type === 'variable' || fn.type === 'prefix_id')) {
+        out.calls.push({ callee: nodeText(fn), line: at.line, col: at.col })
+      }
+    }
+    for (let i = 0; i < node.childCount; i++) {
+      const c = childAt(node, i)
+      if (c !== undefined) visit(c)
+    }
+  }
+  visit(root)
+  return out
 }
 
 /** Bash: function definitions, command calls, source/. as imports. */

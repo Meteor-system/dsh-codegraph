@@ -45,7 +45,7 @@ export const SUPPORTED_LANGUAGES: ReadonlySet<string> = new Set([
   '.ts', '.tsx', '.js', '.jsx',
   '.py', '.go', '.rs', '.java',
   '.c', '.cpp', '.cc', '.h', '.hpp', '.cs', '.php', '.rb', '.bash', '.sh',
-  '.hs', '.jl', '.scala',
+  '.hs', '.jl', '.scala', '.razor',
 ])
 
 /** Default exclusion rules (ADR-0003: scan scope). */
