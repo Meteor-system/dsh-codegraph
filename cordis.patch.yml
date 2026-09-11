@@ -1,4 +1,5 @@
 # dsh bundle patch: inserts the CodeGraph plugin into a profile's layer stack.
+# `name` is the npm package the loader imports (not the display name).
 - insert:
     - id: dsh-codegraph
-      name: 'CodeGraph'
+      name: dsh-codegraph

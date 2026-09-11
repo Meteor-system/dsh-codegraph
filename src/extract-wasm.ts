@@ -15,8 +15,12 @@ import type { ExtractedRelation, ExtractedSymbol } from './extract-ts.ts'
 const nodeRequire = createRequire(import.meta.url)
 
 // Lazy singleton loader: Parser.init() once, then one Language per grammar.
+// One Parser is not re-entrant — overlapping parse() calls (or GC of a
+// Tree after the next parse reused its WASM heap) abort with
+// `RuntimeError: memory access out of bounds` in `_ts_tree_delete`.
 let parserPromise: Promise<{ parser: { parse: (s: string) => unknown; setLanguage: (l: unknown) => void }; load: (pkg: string, wasmFile: string) => Promise<unknown> }> | undefined
 const languageCache = new Map<string, Promise<unknown>>()
+let parseChain: Promise<unknown> = Promise.resolve()
 
 interface TSNode {
   type: string
@@ -838,21 +842,35 @@ export async function relationsForWasmFile(
   const langInfo = WASM_LANGUAGES[ext]
   if (langInfo === undefined) return []
 
-  const { parser, load } = await getParser()
-  const wasmFile = langInfo.wasm ?? `tree-sitter-${langInfo.pkg.replace(/^tree-sitter-/, '')}.wasm`
-  const language = await load(langInfo.pkg, wasmFile)
-  parser.setLanguage(language)
   const source = readFileSync(absPath, 'utf8')
-  const tree = parser.parse(source) as { rootNode: TSNode } | null
-  if (tree === null) return []
+  const run = parseChain.then(async () => {
+    const { parser, load } = await getParser()
+    const wasmFile = langInfo.wasm ?? `tree-sitter-${langInfo.pkg.replace(/^tree-sitter-/, '')}.wasm`
+    const language = await load(langInfo.pkg, wasmFile)
+    parser.setLanguage(language)
+    const tree = parser.parse(source) as { rootNode: TSNode; delete?: () => void } | null
+    if (tree === null) return [] as ExtractedRelation[]
+    try {
+      return relationsFromExtraction(relPath, ext, EXTRACTORS[langInfo.ext](tree.rootNode), projectFiles, packages)
+    } finally {
+      tree.delete?.()
+    }
+  })
+  parseChain = run.then(() => undefined, () => undefined)
+  return run
+}
 
-  const extracted = EXTRACTORS[langInfo.ext](tree.rootNode)
+function relationsFromExtraction(
+  relPath: string,
+  ext: string,
+  extracted: LangExtraction,
+  projectFiles: ReadonlySet<string>,
+  packages?: PackageInfo[],
+): ExtractedRelation[] {
   const relations: ExtractedRelation[] = []
-
   for (const s of extracted.symbols) {
     relations.push({ kind: s.kind, source: relPath, target: s.name, confidence: 'exact', location: { file: relPath, line: s.line, col: s.col } })
   }
-
   for (const imp of extracted.imports) {
     const local = resolveWasmImport(relPath, imp.specifier, projectFiles, ext)
     const resolved = local ?? (packages !== undefined ? resolvePackageImport(imp.specifier, packages, projectFiles) : undefined)
@@ -860,26 +878,19 @@ export async function relationsForWasmFile(
       relations.push({ kind: 'import', source: relPath, target: resolved, confidence: 'exact', location: { file: relPath, line: imp.line, col: imp.col } })
     }
   }
-
   for (const call of extracted.calls) {
     const sameFile = extracted.symbols.some((s) => s.name === call.callee)
     const at = { file: relPath, line: call.line, col: call.col }
     relations.push({ kind: 'call', source: relPath, target: call.callee, confidence: sameFile ? 'exact' : 'inferred', location: at })
   }
-
   for (const inh of extracted.inherits) {
     relations.push({ kind: 'inherit', source: relPath, target: inh.parent, confidence: inh.confidence, location: { file: relPath, line: inh.line, col: inh.col } })
   }
-
   const definedNames = new Set(extracted.symbols.map((s) => s.name))
   for (const ref of extracted.typeRefs) {
-    // Same-file defined types are parser-proven (exact). Unresolved names
-    // (int, i32, unknown imports) are not emitted — they are not inferred
-    // import/export matches (ADR-0004).
     if (definedNames.has(ref.name)) {
       relations.push({ kind: 'type-ref', source: relPath, target: ref.name, confidence: 'exact', location: { file: relPath, line: ref.line, col: ref.col } })
     }
   }
-
   return relations
 }

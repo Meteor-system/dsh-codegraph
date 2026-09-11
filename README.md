@@ -17,9 +17,21 @@ The bundle patch is `cordis.patch.yml`. Switching projects does not require rein
 
 ## Per-project enablement
 
-The plugin is **disabled by default**. Enable it for the current project (config lives beside the project root, not in the profile). Nothing is scanned on enable — the graph builds lazily on the first `codegraph_explore` call.
+The plugin is **disabled by default**. Enable it for the current project with `<project>/.dsh/codegraph/config.json` (beside the project root, not in the profile):
 
-Enablement takes effect at the next prompt/request assembly; an in-flight request keeps its frozen tool set.
+```json
+{ "enabled": true }
+```
+
+Or enable from the profile patch (`$DSH_HOME/profiles/<name>/cordis.patch.yml`):
+
+```yaml
+- id: dsh-codegraph
+  config:
+    enabled: true
+```
+
+Nothing is scanned on enable — the graph builds lazily on the first `codegraph_explore` call. The plugin reads enablement when it loads; restart the session after changing it. An in-flight request keeps its frozen tool set.
 
 ## Configuration
 
@@ -29,7 +41,7 @@ Project overrides (budgets, globs, storage):
 |---|---|---|
 | `max_file_bytes` | 1_000_000 | Skip files larger than this |
 | `max_files` | 50_000 | Stop the scan at this many files |
-| `build_timeout_ms` | 120_000 | First-build / refresh wait; exceeded → `indexing` |
+| `build_timeout_ms` | 300_000 | First-build / refresh wait; exceeded → `indexing` |
 | `include` | — | Extra globs to force-include |
 | `exclude` | — | Extra globs to force-exclude |
 

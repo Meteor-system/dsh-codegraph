@@ -33,6 +33,12 @@ describe('packaging (ticket 12)', () => {
     expect(provenance.razor.license).toBe('MIT')
   })
 
+  it('bundle patch names the npm package specifier, not the display name', () => {
+    const patch = read('cordis.patch.yml')
+    expect(patch).toMatch(/^\s+name:\s*dsh-codegraph\s*$/m)
+    expect(patch).not.toMatch(/name:\s*['"]CodeGraph['"]/)
+  })
+
   it('README covers install, enablement, configuration, diagnostics, and limitations', () => {
     const readme = read('README.md').toLowerCase()
     for (const term of ['profile', 'enable', 'max_files', 'max_file_bytes', '.dsh/codegraph', 'diagnostic', 'limitation']) {

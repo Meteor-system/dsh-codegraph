@@ -312,7 +312,7 @@ export class ProjectGraph {
 
   /** Async entry: refresh, then answer. Timeout path returns indexing status. */
   async answerWithTimeout(query: GraphQuery, refreshTimeoutMs?: number): Promise<GraphAnswer> {
-    const budget = refreshTimeoutMs ?? (this.overrides['build_timeout_ms'] as number | undefined)
+    const budget = refreshTimeoutMs ?? (this.overrides['build_timeout_ms'] as number | undefined) ?? 300_000
     if (budget !== undefined && budget <= 0) {
       // Budget exhausted before starting: if a build/refresh would be
       // needed, report indexing with progress — answering from a stale

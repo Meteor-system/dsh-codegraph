@@ -113,6 +113,18 @@ describe('diagnostics and budgets (ticket 7)', () => {
     expect((cleanResult.diagnostics as Array<{ code: string }>).some((d) => d.code === 'partial')).toBe(false)
   })
 
+  it('default exclusions skip conda and site-packages trees', async () => {
+    const root = fixtureProject({
+      'src/keep.ts': 'export function keep(): number { return 1 }\n',
+      '.conda/envs/Aiki/Lib/site-packages/playwright/x.js': 'export function apply() { return 1 }\n',
+    })
+    const ctx = activatedCtx(root)
+    const hidden = await explore(ctx, { mode: 'callers', target: 'apply' })
+    expect((hidden.paths as unknown[]).length).toBe(0)
+    const kept = await explore(ctx, { mode: 'callers', target: 'keep' })
+    expect((kept.paths as unknown[]).length).toBeGreaterThan(0)
+  })
+
   it('exclude glob removes a directory; include glob adds an extension', async () => {
     const root = fixtureProject({
       'src/keep.ts': 'export function keep(): number { return 1 }\n',

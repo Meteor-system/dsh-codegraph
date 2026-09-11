@@ -52,6 +52,8 @@ export const SUPPORTED_LANGUAGES: ReadonlySet<string> = new Set([
 export const DEFAULT_EXCLUDED_DIRS: ReadonlySet<string> = new Set([
   'node_modules', '.git', '.hg', '.svn', 'dist', 'build', 'out', 'coverage',
   '.dsh', '.cache', 'vendor', 'target',
+  '.conda', 'conda', 'site-packages', '.venv', 'venv', '__pycache__',
+  '.claude', '.npm', '.pnpm-store',
 ])
 
 /** Snapshot schema version; bump forces a full rebuild (ADR-0003). */

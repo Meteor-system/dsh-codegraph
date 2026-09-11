@@ -45,3 +45,43 @@ export interface CodeGraphProjectConfig {
    */
   overrides?: Record<string, unknown>
 }
+
+/**
+ * The real host (cordis) tool-run context. Duck-typed so the bundle does
+ * not import `@deepseek-ai/dsh-tools` — that package lives in the DSH
+ * install, not in an out-of-tree plugin's node_modules.
+ */
+export interface HostToolExec {
+  agent?: { session?: { header?: { cwd?: string } } }
+  /** Host timeout policy aborts this after `timeoutMs`. */
+  signal?: AbortSignal
+}
+
+/** The subset of a host tool definition `ctx.tools.register` accepts. */
+export interface HostToolDefinition {
+  name: string
+  description: string
+  parameters: unknown
+  output: {
+    schema: unknown
+    render(args: unknown, value: unknown): Array<{ type: string; text: string }>
+  }
+  execute(args: unknown, exec?: HostToolExec): Promise<unknown>
+  isConcurrencySafe?(): boolean
+  /** Cooperative tool-call budget (ms). Omit = no host deadline. */
+  timeoutMs?: number
+}
+
+/** Structural stand-in for the cordis context `apply()` receives. */
+export interface HostContext {
+  tools: {
+    register(definition: HostToolDefinition): () => void
+  }
+}
+
+/** Cordis row `config` plus optional project-root override. */
+export interface HostPluginConfig {
+  enabled?: boolean
+  projectRoot?: string
+  overrides?: Record<string, unknown>
+}
