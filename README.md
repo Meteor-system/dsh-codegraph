@@ -38,7 +38,7 @@ dsh plugin --profile web add dsh-codegraph
 本地开发包：
 
 ```bash
-dsh plugin --profile web add file:./dsh-codegraph-0.1.1.tgz
+dsh plugin --profile web add file:./dsh-codegraph-0.1.2.tgz
 ```
 
 改完 profile 的 patch 后要**重启**该 profile（正在跑的 GUI 不会热替换整棵插件树）。
