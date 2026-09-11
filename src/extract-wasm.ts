@@ -652,7 +652,8 @@ function extractRuby(root: TSNode): LangExtraction {
     const thisIsMethod = node.type === 'method' || node.type === 'singleton_method'
     if (node.type === 'identifier' && !thisIsMethod) {
       const text = nodeText(node)
-      if (!inMethodName && (defined.has(text) || text === 'send' || text === 'public_send' || text === 'method_missing')) {
+      const atOwnDef = out.symbols.some((s) => s.name === text && s.line === at.line)
+      if (!inMethodName && !atOwnDef && (defined.has(text) || text === 'send' || text === 'public_send' || text === 'method_missing')) {
         if (!out.calls.some((c) => c.callee === text && c.line === at.line && c.col === at.col)) {
           out.calls.push({ callee: text, line: at.line, col: at.col })
         }

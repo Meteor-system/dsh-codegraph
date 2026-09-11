@@ -77,12 +77,12 @@ const TOOL_DESCRIPTION = [
   '- reachability: whether and how symbol X reaches symbol Y (ordered paths).',
   '- callers: who calls X (ordered relation paths).',
   '- impact: what changing X affects (bounded transitive closure, default depth 5, hard cap 20).',
-  'Parameters: mode (required), target (required; symbol name, qualified name, or file:line),',
+  'Parameters: mode (required), target (required; symbol name, qualified name, file:line, or path prefix),',
   'query (natural-language supplement), max_depth (default 5, cap 20),',
   'relation (definition|call|import|inherit|type-ref), confidence (exact|inferred|heuristic),',
   'scope, limit (default 50, hard cap 200), include_snippets.',
   'Every edge carries confidence; ambiguous targets return candidate lists.',
-  'Diagnostics vocabulary: partial, unsupported_language, indexing, truncated, plus file-skip reasons.',
+  'Diagnostics vocabulary: partial, unsupported_language, indexing, truncated, unknown_target, plus file-skip reasons.',
 ].join(' ')
 
 /** Diagnostics vocabulary lives in the model (ADR-0004); re-exported for consumers. */

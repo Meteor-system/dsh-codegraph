@@ -57,7 +57,7 @@ export const DEFAULT_EXCLUDED_DIRS: ReadonlySet<string> = new Set([
 ])
 
 /** Snapshot schema version; bump forces a full rebuild (ADR-0003). */
-export const SNAPSHOT_SCHEMA_VERSION = 1
+export const SNAPSHOT_SCHEMA_VERSION = 2
 
 /** Diagnostics codes are a closed enumeration (ADR-0004: no ad-hoc strings). */
 export type DiagnosticCode =
@@ -68,6 +68,7 @@ export type DiagnosticCode =
   | 'invalid_mode'
   | 'no_path'
   | 'ambiguous_target'
+  | 'unknown_target'
   | 'file_oversize'
   | 'file_binary'
   | 'file_decode_failed'
@@ -87,6 +88,7 @@ export const DIAGNOSTIC_CODES: ReadonlySet<DiagnosticCode> = new Set([
   'invalid_mode',
   'no_path',
   'ambiguous_target',
+  'unknown_target',
   'file_oversize',
   'file_binary',
   'file_decode_failed',

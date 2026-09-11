@@ -45,22 +45,23 @@ describe('evidence contract (ticket 6)', () => {
   it('fixtures produce all three confidence labels', async () => {
     const root = fixtureProject({
       // exact: same-file call (inner); inferred: cross-file import-name
-      // call (callee); heuristic: callback invocation — `cb` is a
-      // parameter, it has no definition edge anywhere.
+      // call (callee). `cb` is a parameter, not a graph node (ADR-0006).
       'src/callee.ts': 'export function callee(): number { return 1 }\n',
       'src/caller.ts': "import { callee } from './callee'\nfunction inner(): number { return 7 }\nexport function caller(): number {\n  const a = inner()\n  const b = callee()\n  return a + b\n}\nexport function runner(cb: () => void): void {\n  cb()\n}\n",
     })
     const ctx = activatedCtx(root)
     const sameFile = await explore(ctx, { mode: 'callers', target: 'inner', relation: 'call' })
     const crossFile = await explore(ctx, { mode: 'callers', target: 'callee', relation: 'call' })
-    const dynamic = await explore(ctx, { mode: 'callers', target: 'cb', relation: 'call' })
     const labels = new Set<string>()
-    for (const r of [sameFile, crossFile, dynamic]) {
+    for (const r of [sameFile, crossFile]) {
       for (const e of (r.paths as Array<{ edges: Edge[] }>).flatMap((p) => p.edges)) labels.add(e.confidence)
     }
     expect(labels.has('exact')).toBe(true)
     expect(labels.has('inferred')).toBe(true)
-    expect(labels.has('heuristic')).toBe(true)
+    const notANode = await explore(ctx, { mode: 'callers', target: 'cb' })
+    expect((notANode.paths as unknown[]).length).toBe(0)
+    expect((notANode.candidates as unknown[]).length).toBe(0)
+    expect((notANode.diagnostics as Array<{ code: string }>).some((d) => d.code === 'unknown_target')).toBe(true)
   })
 
   it('confidence filter narrows output to the requested label', async () => {
@@ -69,10 +70,10 @@ describe('evidence contract (ticket 6)', () => {
       'src/caller.ts': "import { callee } from './callee'\nexport function caller(): number {\n  return callee()\n}\n",
     })
     const ctx = activatedCtx(root)
-    const result = await explore(ctx, { mode: 'callers', target: 'caller', relation: 'call', confidence: 'exact' })
+    const result = await explore(ctx, { mode: 'callers', target: 'callee', relation: 'call', confidence: 'inferred' })
     const edges = (result.paths as Array<{ edges: Edge[] }>).flatMap((p) => p.edges)
     expect(edges.length).toBeGreaterThan(0)
-    expect(edges.every((e) => e.confidence === 'exact')).toBe(true)
+    expect(edges.every((e) => e.confidence === 'inferred')).toBe(true)
   })
 
   it('ambiguous symbol returns ranked candidates, never a silent pick', async () => {

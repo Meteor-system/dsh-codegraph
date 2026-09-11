@@ -47,27 +47,39 @@ export function extractTsFamily(absPath: string, relPath: string): ExtractedFile
     return { line: pos.line + 1, col: pos.character + 1 }
   }
 
-  const visit = (node: ts.Node): void => {
-    if (ts.isFunctionDeclaration(node) && node.name) {
-      const at = lineOf(node)
-      symbols.push({ name: node.name.text, kind: 'definition', line: at.line, col: at.col })
-    } else if (ts.isClassDeclaration(node) && node.name) {
-      const at = lineOf(node)
-      symbols.push({ name: node.name.text, kind: 'definition', line: at.line, col: at.col })
-    } else if (ts.isInterfaceDeclaration(node) && node.name) {
-      const at = lineOf(node)
-      symbols.push({ name: node.name.text, kind: 'definition', line: at.line, col: at.col })
-    } else if (ts.isTypeAliasDeclaration(node) && node.name) {
-      const at = lineOf(node)
-      symbols.push({ name: node.name.text, kind: 'definition', line: at.line, col: at.col })
-    } else if (ts.isVariableStatement(node)) {
-      for (const decl of node.declarationList.declarations) {
-        if (ts.isIdentifier(decl.name) && (decl.initializer !== undefined || (node.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword))) {
-          const at = lineOf(decl)
-          symbols.push({ name: decl.name.text, kind: 'definition', line: at.line, col: at.col })
+  const addDefinition = (name: string, node: ts.Node): void => {
+    const at = lineOf(node)
+    symbols.push({ name, kind: 'definition', line: at.line, col: at.col })
+  }
+
+  // Graph nodes are module-level declarations only (ADR-0006). Nested
+  // functions and block-scoped locals are not nodes; imports/calls still
+  // walk the whole tree.
+  for (const stmt of sf.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name) {
+      addDefinition(stmt.name.text, stmt)
+    } else if (ts.isClassDeclaration(stmt) && stmt.name) {
+      addDefinition(stmt.name.text, stmt)
+      for (const member of stmt.members) {
+        if (ts.isMethodDeclaration(member) && member.name !== undefined && ts.isIdentifier(member.name)) {
+          addDefinition(`${stmt.name.text}.${member.name.text}`, member)
         }
       }
-    } else if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+    } else if (ts.isInterfaceDeclaration(stmt) && stmt.name) {
+      addDefinition(stmt.name.text, stmt)
+    } else if (ts.isTypeAliasDeclaration(stmt) && stmt.name) {
+      addDefinition(stmt.name.text, stmt)
+    } else if (ts.isVariableStatement(stmt)) {
+      for (const decl of stmt.declarationList.declarations) {
+        if (ts.isIdentifier(decl.name) && (decl.initializer !== undefined || (stmt.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword))) {
+          addDefinition(decl.name.text, decl)
+        }
+      }
+    }
+  }
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
       const at = lineOf(node)
       imports.push({ specifier: node.moduleSpecifier.text, line: at.line, col: at.col })
     } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {

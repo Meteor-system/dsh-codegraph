@@ -150,7 +150,7 @@ describe('diagnostics and budgets (ticket 7)', () => {
     const { DIAGNOSTIC_CODES } = await import('../src/model.ts')
     const expected = new Set([
       'partial', 'unsupported_language', 'indexing', 'truncated', 'invalid_mode',
-      'no_path', 'ambiguous_target', 'file_oversize', 'file_binary', 'file_decode_failed', 'file_count_stop',
+      'no_path', 'ambiguous_target', 'unknown_target', 'file_oversize', 'file_binary', 'file_decode_failed', 'file_count_stop',
     ])
     expect(DIAGNOSTIC_CODES.size).toBe(expected.size)
     for (const code of expected) {

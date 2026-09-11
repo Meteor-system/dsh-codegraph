@@ -67,7 +67,7 @@ describe('incremental refresh (ticket 5)', () => {
     rmSync(join(root, 'src', 'gone.ts'))
     const after = await explore(ctx, { mode: 'callers', target: 'gone' })
     expect(after.paths).toEqual([])
-    expect((after.diagnostics as Array<{ code: string }>).some((d) => d.code === 'partial')).toBe(true)
+    expect((after.diagnostics as Array<{ code: string }>).some((d) => d.code === 'unknown_target')).toBe(true)
   })
 
   it('concurrent queries during refresh are serialized single-flight, both consistent', async () => {

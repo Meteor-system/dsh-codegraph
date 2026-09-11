@@ -8,7 +8,7 @@
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import type { RelationEdge, RelationKind, Diagnostic } from './model.ts'
-import { SNIPPET_LINE_MAX_CHARS, SNIPPET_MAX_LINES } from './model.ts'
+import { SNIPPET_LINE_MAX_CHARS, SNIPPET_MAX_LINES, SNAPSHOT_SCHEMA_VERSION } from './model.ts'
 import { scanProject } from './scan.ts'
 import { DEFAULT_SCAN_LIMITS } from './scan.ts'
 import type { ScanLimits } from './scan.ts'
@@ -231,7 +231,7 @@ export class ProjectGraph {
     this.fingerprints = fingerprints
     this.wasmFiles = wasmFiles
     this.wasmExtracted = false
-    saveSnapshot(this.projectRoot, { schemaVersion: 1, byFile, scanShapeHash: this.scanShapeHash() })
+    saveSnapshot(this.projectRoot, { schemaVersion: SNAPSHOT_SCHEMA_VERSION, byFile, scanShapeHash: this.scanShapeHash() })
     this.metadata.index.status = 'rebuilt'
     this.metadata.index.files = scan.files.length
     // Package boundaries as first-class metadata (ticket 8).
@@ -289,7 +289,7 @@ export class ProjectGraph {
       const outcome = incrementalRefresh(this.projectRoot, changes, previous)
       this.fingerprints = outcome.fingerprints
       this.edges = Object.values(outcome.byFile).flat()
-      saveSnapshot(this.projectRoot, { schemaVersion: 1, byFile: outcome.byFile })
+      saveSnapshot(this.projectRoot, { schemaVersion: SNAPSHOT_SCHEMA_VERSION, byFile: outcome.byFile })
       this.metadata.index.status = outcome.kind === 'incremental' ? 'incremental' : 'rebuilt'
       this.metadata.index.files = Object.keys(outcome.byFile).length
       this.metadata.index.refreshedFiles = outcome.refreshedFiles
@@ -366,7 +366,7 @@ export class ProjectGraph {
     const byFile = this.groupByFile()
     resolveCallConfidence(byFile)
     this.edges = Object.values(byFile).flat()
-    saveSnapshot(this.projectRoot, { schemaVersion: 1, byFile, scanShapeHash: this.scanShapeHash() })
+    saveSnapshot(this.projectRoot, { schemaVersion: SNAPSHOT_SCHEMA_VERSION, byFile, scanShapeHash: this.scanShapeHash() })
   }
 
   private hasBuilt(): boolean {
@@ -403,6 +403,7 @@ export class ProjectGraph {
         ? ['call', 'definition']
         : ['definition', 'import']
 
+    let uniqueName: string | undefined
     let edges = this.edges.filter((e) => wanted.includes(e.kind))
     if (query.confidence !== undefined) {
       edges = edges.filter((e) => e.confidence === query.confidence)
@@ -418,40 +419,47 @@ export class ProjectGraph {
       edges = edges.filter((e) => e.location.file.startsWith(prefix + '/'))
     }
     if (query.target !== undefined) {
-      const needle = query.target.toLowerCase()
+      const fileLine = parseFileLine(query.target)
+      let needle = query.target.toLowerCase()
+      if (fileLine !== undefined) {
+        const hits = this.edges.filter((e) =>
+          e.kind === 'definition'
+          && e.location.file.replace(/\\/g, '/').toLowerCase() === fileLine.file
+          && e.location.line === fileLine.line,
+        )
+        if (hits.length === 1) {
+          needle = hits[0].target.toLowerCase()
+        } else if (hits.length > 1) {
+          return this.candidateAnswer(hits, query, limit)
+        } else {
+          return this.missAnswer(query.target)
+        }
+      } else {
+        const pathHits = definitionsUnderPath(this.edges, query.target)
+        if (pathHits !== undefined) {
+          if (pathHits.length === 0) return this.missAnswer(query.target)
+          return this.candidateAnswer(pathHits, query, limit)
+        }
+      }
       // Ambiguity is about definition targets: the same symbol name
       // defined at several locations (overloads, same-name functions,
       // cross-package types). Multiple call edges naming one symbol are
       // normal callers output, not ambiguity (ADR-0004).
+      const defEdges = this.edges.filter((e) => e.kind === 'definition' && matchesNodeName(e.target, needle))
       const definitionLocations = new Set(
-        this.edges
-          .filter((e) => e.kind === 'definition' && (e.target.toLowerCase() === needle || e.target.toLowerCase().endsWith('/' + needle)))
-          .map((e) => `${e.target.toLowerCase()}|${e.location.file.toLowerCase()}`),
+        defEdges.map((e) => `${e.target.toLowerCase()}|${e.location.file.toLowerCase()}`),
       )
       if (definitionLocations.size > 1) {
-        const defEdges = this.edges.filter((e) => e.kind === 'definition' && (e.target.toLowerCase() === needle || e.target.toLowerCase().endsWith('/' + needle)))
         return this.candidateAnswer(defEdges, query, limit)
       }
-      const matching = edges.filter((e) => e.target.toLowerCase() === needle || e.target.toLowerCase().endsWith('/' + needle))
-      if (matching.length === 0) {
-        // No exact match: substring fallback over definitions AND
-        // heuristic call targets (unresolved calls carry the callee name
-        // as the best lead, ADR-0004).
-        const matchingDefs = this.edges.filter((e) =>
-          (e.kind === 'definition' || (e.kind === 'call' && e.confidence === 'heuristic')) &&
-          e.target.toLowerCase().includes(needle),
-        )
-        if (matchingDefs.length > 1) {
-          return this.candidateAnswer(matchingDefs, query, limit)
-        }
-        const candidates = matchingDefs.slice(0, limit)
-        return {
-          paths: candidates.map((e) => ({ edges: [e] })),
-          candidates: [],
-          diagnostics: [{ code: 'partial', message: 'no exact symbol match; returning ranked candidates' }],
-          truncated: false,
-          total: candidates.length,
-          metadata: this.metadata,
+      uniqueName = defEdges[0]?.target
+      const aliases = aliasesFor(needle, uniqueName)
+      let matching = edges.filter((e) => matchesAlias(e.target, aliases))
+      if (definitionLocations.size === 0) {
+        // Import edges name files, not graph nodes. A basename like
+        // `math-util.ts` still walks import relations; anything else is a miss.
+        if (!(query.relation === 'import' && matching.length > 0)) {
+          return this.missAnswer(query.target)
         }
       }
       // Callers walk upstream: from the target's direct call edges, keep
@@ -492,10 +500,10 @@ export class ProjectGraph {
     // One path per edge for ticket 2 (callers/reach compose paths later).
     // Reachability and impact have dedicated traversal branches (ticket 4).
     if (query.mode === 'reachability' && query.path_to !== undefined) {
-      return this.answerReachability(query, limit)
+      return this.answerReachability({ ...query, target: uniqueResolvedName(query.target, uniqueName) }, limit)
     }
     if (query.mode === 'impact') {
-      return this.answerImpact(query, limit)
+      return this.answerImpact({ ...query, target: uniqueResolvedName(query.target, uniqueName) }, limit)
     }
     const total = edges.length
     const selected = edges.slice(0, limit)
@@ -509,6 +517,20 @@ export class ProjectGraph {
     return { paths, candidates: [], truncated: total > limit, total, diagnostics, metadata: this.metadata }
   }
 
+  private missAnswer(target: string): GraphAnswer {
+    return {
+      paths: [],
+      candidates: [],
+      truncated: false,
+      total: 0,
+      diagnostics: [
+        ...this.scanDiagnostics.filter((d) => d.code !== 'partial'),
+        { code: 'unknown_target', message: `no graph node matches '${target}'` },
+      ],
+      metadata: this.metadata,
+    }
+  }
+
   /** Ranked candidate list for an ambiguous target (ADR-0004). */
   private candidateAnswer(matching: RelationEdge[], query: GraphQuery, limit: number): GraphAnswer {
     const distinct = new Map<string, RelationEdge>()
@@ -516,7 +538,25 @@ export class ProjectGraph {
       const key = `${e.target.toLowerCase()}|${e.location.file.toLowerCase()}`
       if (!distinct.has(key)) distinct.set(key, e)
     }
-    const defs = [...distinct.values()].sort((a, b) => a.location.file.localeCompare(b.location.file))
+    const defs = [...distinct.values()].sort((a, b) => {
+      const at = isTestPath(a.location.file) ? 1 : 0
+      const bt = isTestPath(b.location.file) ? 1 : 0
+      if (at !== bt) return at - bt
+      const pathCmp = a.location.file.replace(/\\/g, '/').localeCompare(b.location.file.replace(/\\/g, '/'))
+      if (pathCmp !== 0) return pathCmp
+      return a.location.line - b.location.line
+    })
+    const truncated = defs.length > limit
+    const diagnostics: Diagnostic[] = []
+    if (defs.length > 1) {
+      diagnostics.push({
+        code: 'ambiguous_target',
+        message: `${defs.length} symbols match '${query.target}'; disambiguate by path or qualified name`,
+      })
+    }
+    if (truncated) {
+      diagnostics.push({ code: 'truncated', message: `${defs.length - limit} more candidates beyond limit` })
+    }
     return {
       paths: [],
       candidates: defs.slice(0, limit).map((e) => ({
@@ -525,8 +565,8 @@ export class ProjectGraph {
         language: languageOfPath(e.location.file),
         line: e.location.line,
       })),
-      diagnostics: [{ code: 'ambiguous_target', message: `${defs.length} symbols match '${query.target}'; disambiguate by path or qualified name` }],
-      truncated: defs.length > limit,
+      diagnostics,
+      truncated,
       total: defs.length,
       metadata: this.metadata,
     }
@@ -557,8 +597,8 @@ export class ProjectGraph {
     const depth = this.clampDepth(query.max_depth ?? IMPACT_DEFAULT_DEPTH, diagnostics)
     const callEdges = this.edges.filter((e) => e.kind === 'call')
 
-    const from = (query.target ?? '').toLowerCase()
-    const to = query.path_to!.toLowerCase()
+    const from = walkNameOf(query.target ?? '')
+    const to = walkNameOf(query.path_to!)
     // Walk upstream from `to`; success iff any hop's caller symbol is `from`.
     const visited = new Set<string>()
     interface Step { edge: RelationEdge; callerSymbol: string; chain: RelationEdge[] }
@@ -601,13 +641,13 @@ export class ProjectGraph {
     const requested = query.max_depth ?? IMPACT_DEFAULT_DEPTH
     const depth = this.clampDepth(requested, diagnostics)
     const callEdges = this.edges.filter((e) => e.kind === 'call')
-    const target = (query.target ?? '').toLowerCase()
+    const target = walkNameOf(query.target ?? '')
 
     const { direct, transitive } = upstreamTraversal(callEdges, target, depth)
     const directNames = [...new Set(direct.map((e) => symbolOfSource(e).split('/').pop()!.replace(/\.[^.]+$/, '')))]
     const transitiveNames = [...new Set(transitive.map((e) => symbolOfSource(e).split('/').pop()!.replace(/\.[^.]+$/, '')))].filter((n) => !directNames.includes(n))
 
-    const anchor = this.edges.filter((e) => e.kind === 'definition' && (e.target.toLowerCase() === target || e.target.toLowerCase().endsWith('/' + target)))
+    const anchor = this.edges.filter((e) => e.kind === 'definition' && matchesNodeName(e.target, query.target ?? ''))
     const all = [...anchor, ...direct, ...transitive]
     const total = all.length
     const selected = all.slice(0, limit)
@@ -642,6 +682,81 @@ export class ProjectGraph {
 function symbolOfSource(edge: RelationEdge): string {
   const base = edge.source.split('/').pop() ?? edge.source
   return base.replace(/\.[^.]+$/, '').toLowerCase()
+}
+
+/**
+ * Case-insensitive full graph-node name, or the method short name
+ * (`Owner.method`). Never a substring of a longer identifier (ADR-0006).
+ */
+function matchesNodeName(nodeName: string, needle: string): boolean {
+  const t = nodeName.toLowerCase()
+  const n = needle.toLowerCase()
+  if (t === n || t.endsWith('/' + n)) return true
+  const dot = t.lastIndexOf('.')
+  return dot > 0 && !t.includes('/') && t.slice(dot + 1) === n
+}
+
+function aliasesFor(needle: string, uniqueNodeName?: string): string[] {
+  const names = new Set<string>([needle.toLowerCase()])
+  const addShort = (name: string): void => {
+    if (name.includes('/')) return
+    const dot = name.lastIndexOf('.')
+    if (dot > 0) names.add(name.slice(dot + 1).toLowerCase())
+  }
+  addShort(needle)
+  if (uniqueNodeName !== undefined) {
+    names.add(uniqueNodeName.toLowerCase())
+    addShort(uniqueNodeName)
+  }
+  return [...names]
+}
+
+function matchesAlias(target: string, aliases: string[]): boolean {
+  const t = target.toLowerCase()
+  return aliases.some((a) => t === a || t.endsWith('/' + a) || t.endsWith('.' + a))
+}
+
+function uniqueResolvedName(requested: string | undefined, uniqueName: string | undefined): string | undefined {
+  return uniqueName ?? requested
+}
+
+/** Call-edge matching name: method short name, otherwise the full node name. */
+function walkNameOf(name: string): string {
+  const n = name.toLowerCase()
+  if (n.includes('/')) return n
+  const dot = n.lastIndexOf('.')
+  return dot > 0 ? n.slice(dot + 1) : n
+}
+
+function isTestPath(path: string): boolean {
+  const norm = path.replace(/\\/g, '/')
+  const parts = norm.split('/')
+  if (parts.includes('tests') || parts.includes('__tests__')) return true
+  const base = parts[parts.length - 1] ?? ''
+  return /\.spec\./i.test(base) || /\.test\./i.test(base)
+}
+
+function parseFileLine(target: string): { file: string; line: number } | undefined {
+  const normalized = target.replace(/\\/g, '/')
+  const at = normalized.lastIndexOf(':')
+  if (at <= 0) return undefined
+  const linePart = normalized.slice(at + 1)
+  if (!/^\d+$/.test(linePart)) return undefined
+  return { file: normalized.slice(0, at).toLowerCase(), line: Number(linePart) }
+}
+
+/** Path-shaped target: file or directory prefix in the project. `undefined` if not path-shaped. */
+function definitionsUnderPath(edges: RelationEdge[], target: string): RelationEdge[] | undefined {
+  const t = target.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase()
+  if (t.length === 0) return undefined
+  const files = new Set(edges.map((e) => e.location.file.replace(/\\/g, '/').toLowerCase()))
+  const namesAFileOrDir = [...files].some((f) => f === t || f.startsWith(t + '/'))
+  if (!namesAFileOrDir) return undefined
+  return edges.filter((e) => {
+    if (e.kind !== 'definition') return false
+    const f = e.location.file.replace(/\\/g, '/').toLowerCase()
+    return f === t || f.startsWith(t + '/')
+  })
 }
 
 function keyOfEdge(edge: RelationEdge): string {

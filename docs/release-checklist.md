@@ -4,7 +4,7 @@ Use this before publishing `dsh-codegraph`.
 
 ## Versioning
 
-- npm package version is independent of the **snapshot schema version** (`SNAPSHOT_SCHEMA_VERSION` in `src/model.ts`, currently `1`).
+- npm package version is independent of the **snapshot schema version** (`SNAPSHOT_SCHEMA_VERSION` in `src/model.ts`, currently `2`).
 - Bumping the schema version forces every client to **rebuild** the on-disk graph at `<project>/.dsh/codegraph/` on the next tool call. Do not bump it for grammar-only upgrades.
 - Grammar upgrades (new parser ABI, changed extraction) do **not** require a schema bump; the next incremental/full rebuild picks up new edges.
 

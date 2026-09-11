@@ -171,10 +171,11 @@ describe('P2 languages (ticket 10)', () => {
     const ctx = activatedCtx(fixtureProject({
       'src/main.php': '<?php\nfunction run($obj, $name) { return $obj->$name(); }\n',
     }))
-    const result = await explore(ctx, { mode: 'callers', target: 'name', relation: 'call' })
-    const calls = edgesOf(result).filter((e) => e.kind === 'call')
-    expect(calls.length).toBeGreaterThan(0)
-    expect(calls.every((e) => e.confidence === 'heuristic')).toBe(true)
+    const result = await explore(ctx, { mode: 'callers', target: 'run' })
+    expect(edgesOf(result).some((e) => e.kind === 'definition' && e.target === 'run')).toBe(true)
+    const notANode = await explore(ctx, { mode: 'callers', target: 'name' })
+    expect(edgesOf(notANode).length).toBe(0)
+    expect((notANode.diagnostics as Array<{ code: string }>).some((d) => d.code === 'unknown_target')).toBe(true)
   }, 30_000)
 
   it('ruby: indexes fixture and answers callers through the contract', async () => {
@@ -191,10 +192,11 @@ describe('P2 languages (ticket 10)', () => {
     const ctx = activatedCtx(fixtureProject({
       'src/main.rb': 'def run(obj, name)\n  obj.send(name)\nend\n',
     }))
-    const result = await explore(ctx, { mode: 'callers', target: 'send', relation: 'call' })
-    const calls = edgesOf(result).filter((e) => e.kind === 'call')
-    expect(calls.length).toBeGreaterThan(0)
-    expect(calls.every((e) => e.confidence === 'heuristic')).toBe(true)
+    const result = await explore(ctx, { mode: 'callers', target: 'run' })
+    expect(edgesOf(result).some((e) => e.kind === 'definition' && e.target === 'run')).toBe(true)
+    const notANode = await explore(ctx, { mode: 'callers', target: 'send' })
+    expect(edgesOf(notANode).length).toBe(0)
+    expect((notANode.diagnostics as Array<{ code: string }>).some((d) => d.code === 'unknown_target')).toBe(true)
   }, 30_000)
 
   it('bash: indexes fixture and answers callers through the contract', async () => {
