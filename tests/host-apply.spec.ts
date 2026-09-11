@@ -109,6 +109,7 @@ describe('host apply (cordis plugin shape)', () => {
     expect(skills[0].invocation?.userInvocable).toBe(true)
     expect(skills[0].description.length).toBeGreaterThan(0)
     expect(skills[0].content.length).toBeGreaterThan(0)
+    expect(skills[0].source).toBe('runtime')
   })
 
   it('registers no skill when disabled or when config is absent', () => {
@@ -117,7 +118,7 @@ describe('host apply (cordis plugin shape)', () => {
     expect(disabled.skills).toHaveLength(0)
 
     const absent = makeHost()
-    apply(absent.ctx)
+    apply(absent.ctx, { projectRoot: '/proj-no-config' })
     expect(absent.skills).toHaveLength(0)
   })
 

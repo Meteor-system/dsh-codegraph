@@ -4,6 +4,7 @@ import type { HostSkillRegistration } from './contract.ts'
 export const CODEGRAPH_SKILL: HostSkillRegistration = {
   name: 'codegraph',
   description: "Warm this project root's index snapshot, then run a diff impact pass on uncommitted changes.",
+  source: 'runtime',
   invocation: { modelInvocable: true, userInvocable: true },
   content: [
     "Warm this project root's index snapshot, then run a diff impact pass only if the working tree is dirty.",

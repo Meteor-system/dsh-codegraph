@@ -77,6 +77,8 @@ export interface HostSkillRegistration {
   name: string
   description: string
   content: string
+  /** Origin bucket; host load validation requires a string (`runtime` for embedded skills). */
+  source: string
   invocation?: {
     modelInvocable: boolean
     userInvocable: boolean
