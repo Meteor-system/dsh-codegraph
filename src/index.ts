@@ -3,14 +3,16 @@
  *
  * Standalone DSH bundle: mounts once per profile; on activation for a
  * project it registers exactly one agent tool, `codegraph_explore`, into
- * the agent's own tool context (never globally), per ADR-0002.
+ * the agent's own tool context (never globally), per ADR-0002, and the
+ * user-invoked `/codegraph` skill when `ctx.skills` is present.
  */
 
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { CodeGraphProjectConfig, FakeContext, HostContext, HostPluginConfig, HostToolDefinition, HostToolExec } from './contract.ts'
+import type { CodeGraphProjectConfig, FakeContext, HostContext, HostPluginConfig, HostSkillRegistration, HostToolDefinition, HostToolExec } from './contract.ts'
 import type { Diagnostic } from './model.ts'
 import { graphFor } from './graph.ts'
+import { CODEGRAPH_SKILL } from './skill.ts'
 
 export const name = 'dsh-codegraph'
 /** Cordis inject list: wait for the host tool registry before applying. */
@@ -238,6 +240,15 @@ function hostTool(config: CodeGraphProjectConfig): HostToolDefinition {
 /** Hosts that have already had the tool registered (duplicate-apply guard). */
 const appliedTools = new WeakSet<object>()
 
+function skillsOf(ctx: HostContext): { register(skill: HostSkillRegistration): () => void } | undefined {
+  // Real Cordis forbids reading `ctx.skills` without inject; `ctx.get` does not.
+  const raw = typeof ctx.get === 'function' ? ctx.get('skills') : ctx.skills
+  if (raw !== null && typeof raw === 'object' && typeof (raw as { register?: unknown }).register === 'function') {
+    return raw as { register(skill: HostSkillRegistration): () => void }
+  }
+  return undefined
+}
+
 /**
  * Cordis plugin entry. The loader requires `apply` (not `activate`).
  * Default-disabled: no registration, no scanning, until enabled via the
@@ -255,6 +266,7 @@ export function apply(ctx: HostContext, config: HostPluginConfig = {}): void {
     projectRoot,
     overrides: { ...file.overrides, ...config.overrides },
   }))
+  skillsOf(ctx)?.register(CODEGRAPH_SKILL)
 }
 
 /**
@@ -290,4 +302,4 @@ export function activate(ctx: FakeContext): void {
 }
 
 // Re-export the seam types for test ergonomics.
-export type { FakeContext, CapturedRegistration, CodeGraphProjectConfig, HostContext, HostPluginConfig, HostToolDefinition } from './contract.ts'
+export type { FakeContext, CapturedRegistration, CodeGraphProjectConfig, HostContext, HostPluginConfig, HostSkillRegistration, HostToolDefinition } from './contract.ts'

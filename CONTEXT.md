@@ -22,6 +22,12 @@ A standalone DSH bundle plugin (npm package `dsh-codegraph`, bundle id `dsh-code
 - **Scan scope** — files eligible for indexing: respect `.gitignore` plus default exclusions (dependencies, build output, caches, VCS dirs); only supported-language source files; project-level include/exclude globs may override.
 - **Read-only tool** — `codegraph_explore` queries are read-only and request no per-call approval; the index-store write is an internal indexing side effect, stated in the result.
 - **Activation timing** — enabling or disabling the plugin takes effect at the next prompt/request assembly; an in-flight model request keeps its frozen tool set.
+- **CodeGraph skill** — the user-invoked command `/codegraph`. The plugin registers it only when enabled, so a missing command means the plugin is not on. It is not an agent preset. One run: index warmup via `codegraph_explore` until `metadata.index.status` is not `indexing`, then a diff impact pass if the working tree is dirty (at most 10 top-level exported symbols from the diff; skip the pass when clean).
+  _Avoid_: a fourth explore mode, writing the index store directly, silent session-start indexing
+- **Index warmup** — an explicit request whose success means this project root's index snapshot exists on disk. It is not created by opening a session.
+  _Avoid_: auto-create on session start, global graph
+- **Diff impact pass** — a `callers`/`impact` query whose targets come from the current uncommitted diff; skipped when the working tree is clean.
+  _Avoid_: full-graph crawl, a session query with no target
 
 ## Host facts this design relies on
 

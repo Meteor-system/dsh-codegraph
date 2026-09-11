@@ -64,6 +64,15 @@ dsh plugin --profile web add file:./dsh-codegraph-0.1.0.tgz
 
 启用本身不扫描。改启用状态后重启会话；进行中的请求仍用旧工具集。
 
+## `/codegraph`
+
+启用后可以打 `/codegraph`。一次运行会：
+
+1. **Index warmup** — 调 `codegraph_explore`，直到 `metadata.index.status` 不是 `indexing`（图落在当前工作区磁盘上）。
+2. **Diff impact pass** — 工作区有未提交改动时，对 diff 里最多 10 个顶层导出符号跑 `callers` / `impact`；干净树跳过这一步。
+
+插件没开时这个命令不存在。技能不是 agent 预设，也不会在打开会话时偷偷建索引。
+
 ## 配置
 
 项目级覆盖：

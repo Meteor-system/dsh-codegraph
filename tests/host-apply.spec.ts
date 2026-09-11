@@ -3,24 +3,38 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply, inject, name } from '../src/index.ts'
-import type { HostContext, HostToolDefinition } from '../src/contract.ts'
+import type { HostContext, HostSkillRegistration, HostToolDefinition } from '../src/contract.ts'
 
-function makeHost(): { ctx: HostContext; registrations: HostToolDefinition[] } {
+function makeHost(opts?: { skills?: boolean }): {
+  ctx: HostContext
+  registrations: HostToolDefinition[]
+  skills: HostSkillRegistration[]
+} {
   const registrations: HostToolDefinition[] = []
-  return {
-    registrations,
-    ctx: {
-      tools: {
-        register(definition) {
-          registrations.push(definition)
-          return () => {
-            const at = registrations.indexOf(definition)
-            if (at !== -1) registrations.splice(at, 1)
-          }
-        },
+  const skills: HostSkillRegistration[] = []
+  const ctx: HostContext = {
+    tools: {
+      register(definition) {
+        registrations.push(definition)
+        return () => {
+          const at = registrations.indexOf(definition)
+          if (at !== -1) registrations.splice(at, 1)
+        }
       },
     },
   }
+  if (opts?.skills !== false) {
+    ctx.skills = {
+      register(skill) {
+        skills.push(skill)
+        return () => {
+          const at = skills.indexOf(skill)
+          if (at !== -1) skills.splice(at, 1)
+        }
+      },
+    }
+  }
+  return { ctx, registrations, skills }
 }
 
 describe('host apply (cordis plugin shape)', () => {
@@ -85,5 +99,96 @@ describe('host apply (cordis plugin shape)', () => {
     apply(ctx, { enabled: true, projectRoot: '/proj' })
     apply(ctx, { enabled: true, projectRoot: '/proj' })
     expect(registrations).toHaveLength(1)
+  })
+
+  it('registers a user-invocable skill named codegraph when enabled', () => {
+    const { ctx, skills } = makeHost()
+    apply(ctx, { enabled: true, projectRoot: '/proj' })
+    expect(skills).toHaveLength(1)
+    expect(skills[0].name).toBe('codegraph')
+    expect(skills[0].invocation?.userInvocable).toBe(true)
+    expect(skills[0].description.length).toBeGreaterThan(0)
+    expect(skills[0].content.length).toBeGreaterThan(0)
+  })
+
+  it('registers no skill when disabled or when config is absent', () => {
+    const disabled = makeHost()
+    apply(disabled.ctx, { projectRoot: '/proj' })
+    expect(disabled.skills).toHaveLength(0)
+
+    const absent = makeHost()
+    apply(absent.ctx)
+    expect(absent.skills).toHaveLength(0)
+  })
+
+  it('missing ctx.skills still registers the tool and does not throw', () => {
+    const { ctx, registrations, skills } = makeHost({ skills: false })
+    expect(() => apply(ctx, { enabled: true, projectRoot: '/proj' })).not.toThrow()
+    expect(registrations).toHaveLength(1)
+    expect(registrations[0].name).toBe('codegraph_explore')
+    expect(skills).toHaveLength(0)
+  })
+
+  it('registers the skill via ctx.get("skills") when that is how the host exposes it', () => {
+    const skills: HostSkillRegistration[] = []
+    const { ctx, registrations } = makeHost({ skills: false })
+    ctx.get = (name) => {
+      if (name !== 'skills') return undefined
+      return {
+        register(skill: HostSkillRegistration) {
+          skills.push(skill)
+          return () => {}
+        },
+      }
+    }
+    apply(ctx, { enabled: true, projectRoot: '/proj' })
+    expect(registrations).toHaveLength(1)
+    expect(skills).toHaveLength(1)
+    expect(skills[0].name).toBe('codegraph')
+    expect(skills[0].invocation?.userInvocable).toBe(true)
+  })
+
+  it('re-apply does not duplicate the skill', () => {
+    const { ctx, skills } = makeHost()
+    apply(ctx, { enabled: true, projectRoot: '/proj' })
+    apply(ctx, { enabled: true, projectRoot: '/proj' })
+    expect(skills).toHaveLength(1)
+  })
+})
+
+describe('codegraph skill body', () => {
+  function body(): string {
+    const { ctx, skills } = makeHost()
+    apply(ctx, { enabled: true, projectRoot: '/proj' })
+    return skills[0].content
+  }
+
+  it('requires warmup through codegraph_explore only (no fourth mode, no index-store writes)', () => {
+    const text = body()
+    expect(text).toContain('codegraph_explore')
+    expect(text).toMatch(/\bmode\b/)
+    expect(text).toMatch(/\btarget\b/)
+    expect(text).not.toMatch(/mode:\s*['"]warmup['"]/)
+    expect(text).not.toMatch(/write.{0,80}\.dsh\/codegraph/i)
+  })
+
+  it('stops on indexing before the diff impact pass and tells the user to retry', () => {
+    const text = body()
+    expect(text).toContain('indexing')
+    expect(text.toLowerCase()).toContain('retry')
+    expect(text.toLowerCase()).toContain('diff impact')
+  })
+
+  it('skips the diff impact pass when the working tree is clean', () => {
+    const text = body()
+    expect(text.toLowerCase()).toMatch(/clean/)
+    expect(text.toLowerCase()).toMatch(/skip/)
+  })
+
+  it('caps dirty-tree symbols at ten, truncates overflow, and falls back to path scope', () => {
+    const text = body()
+    expect(text).toMatch(/\b10\b|\bten\b/i)
+    expect(text.toLowerCase()).toMatch(/truncat/)
+    expect(text).toContain('scope')
   })
 })

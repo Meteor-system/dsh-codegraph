@@ -72,11 +72,32 @@ export interface HostToolDefinition {
   timeoutMs?: number
 }
 
+/** Runtime skill contribution `ctx.skills.register` accepts (duck-typed). */
+export interface HostSkillRegistration {
+  name: string
+  description: string
+  content: string
+  invocation?: {
+    modelInvocable: boolean
+    userInvocable: boolean
+  }
+}
+
 /** Structural stand-in for the cordis context `apply()` receives. */
 export interface HostContext {
   tools: {
     register(definition: HostToolDefinition): () => void
   }
+  /**
+   * Optional skill registry. Absent on hosts that have no `ctx.skills`;
+   * apply must still register the tool and must not throw.
+   * Real DSH hosts expose this via `ctx.get('skills')` without a hard inject.
+   */
+  skills?: {
+    register(skill: HostSkillRegistration): () => void
+  }
+  /** Optional Cordis lookup; used so we never read `ctx.skills` without inject. */
+  get?(name: string): unknown
 }
 
 /** Cordis row `config` plus optional project-root override. */

@@ -37,3 +37,7 @@ All automated tests go through **one seam**: the bundle's activation entry point
 - Assertions read **only** the captured registrations and the executor's input/output JSON — never parser internals, storage layout, or module structure.
 - The fake context (`src/contract.ts` — the host-context contract, consumed by tests as the seam) is structural, not imported from any host package; tests run without the DSH host installed.
 - When later tickets add behavior (indexing, refresh, budgets), their tests extend the same fake context shape (e.g. fixture project paths on `config.projectRoot`) rather than adding new seams.
+
+## Host `apply` (same family)
+
+`tests/host-apply.spec.ts` is the same seam against the real Cordis entry `apply(ctx)`. Assertions read captured `ctx.tools.register` and, when present, `ctx.skills.register` (name, invocation, instruction `content`). A host without `ctx.skills` still registers the tool. Real hosts expose skills via `ctx.get('skills')`; tests cover both shapes.
