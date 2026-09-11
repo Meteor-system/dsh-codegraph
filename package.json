@@ -23,7 +23,8 @@
     "build": "tsc -p tsconfig.json",
     "check": "npm run typecheck && npm run build && npm test",
     "test": "vitest run",
-    "prepack": "npm run check"
+    "prepack": "npm run check",
+    "abi-check": "vitest run tests/packaging.spec.ts"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
@@ -51,25 +52,28 @@
     "lib",
     "src",
     "cordis.patch.yml",
-    "LICENSE"
+    "LICENSE",
+    "README.md",
+    "grammars/provenance.json",
+    "scripts/build-razor-wasm.md"
   ],
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "tree-sitter-bash": "^0.25.1",
-    "tree-sitter-c": "^0.24.1",
-    "tree-sitter-c-sharp": "^0.23.5",
-    "tree-sitter-cpp": "^0.23.4",
-    "tree-sitter-go": "^0.25.0",
-    "tree-sitter-haskell": "^0.23.1",
-    "tree-sitter-java": "^0.23.5",
-    "tree-sitter-julia": "^0.23.1",
-    "tree-sitter-php": "^0.24.2",
-    "tree-sitter-python": "^0.25.0",
-    "tree-sitter-ruby": "^0.23.1",
-    "tree-sitter-rust": "^0.24.0",
-    "tree-sitter-scala": "^0.24.0",
-    "web-tree-sitter": "^0.27.0"
+    "tree-sitter-bash": "0.25.1",
+    "tree-sitter-c": "0.24.1",
+    "tree-sitter-c-sharp": "0.23.5",
+    "tree-sitter-cpp": "0.23.4",
+    "tree-sitter-go": "0.25.0",
+    "tree-sitter-haskell": "0.23.1",
+    "tree-sitter-java": "0.23.5",
+    "tree-sitter-julia": "0.23.1",
+    "tree-sitter-php": "0.24.2",
+    "tree-sitter-python": "0.25.0",
+    "tree-sitter-ruby": "0.23.1",
+    "tree-sitter-rust": "0.24.0",
+    "tree-sitter-scala": "0.24.0",
+    "web-tree-sitter": "0.27.0"
   }
 }

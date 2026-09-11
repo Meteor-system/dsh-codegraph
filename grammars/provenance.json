@@ -1,0 +1,30 @@
+{
+  "runtime": {
+    "package": "web-tree-sitter",
+    "version": "0.27.0",
+    "license": "MIT",
+    "wasm": "web-tree-sitter.wasm"
+  },
+  "grammars": [
+    { "package": "tree-sitter-bash", "version": "0.25.1", "license": "MIT", "wasm": "tree-sitter-bash.wasm" },
+    { "package": "tree-sitter-c", "version": "0.24.1", "license": "MIT", "wasm": "tree-sitter-c.wasm" },
+    { "package": "tree-sitter-c-sharp", "version": "0.23.5", "license": "MIT", "wasm": "tree-sitter-c_sharp.wasm" },
+    { "package": "tree-sitter-cpp", "version": "0.23.4", "license": "MIT", "wasm": "tree-sitter-cpp.wasm" },
+    { "package": "tree-sitter-go", "version": "0.25.0", "license": "MIT", "wasm": "tree-sitter-go.wasm" },
+    { "package": "tree-sitter-haskell", "version": "0.23.1", "license": "MIT", "wasm": "tree-sitter-haskell.wasm" },
+    { "package": "tree-sitter-java", "version": "0.23.5", "license": "MIT", "wasm": "tree-sitter-java.wasm" },
+    { "package": "tree-sitter-julia", "version": "0.23.1", "license": "MIT", "wasm": "tree-sitter-julia.wasm" },
+    { "package": "tree-sitter-php", "version": "0.24.2", "license": "MIT", "wasm": "tree-sitter-php.wasm" },
+    { "package": "tree-sitter-python", "version": "0.25.0", "license": "MIT", "wasm": "tree-sitter-python.wasm" },
+    { "package": "tree-sitter-ruby", "version": "0.23.1", "license": "MIT", "wasm": "tree-sitter-ruby.wasm" },
+    { "package": "tree-sitter-rust", "version": "0.24.0", "license": "MIT", "wasm": "tree-sitter-rust.wasm" },
+    { "package": "tree-sitter-scala", "version": "0.24.0", "license": "MIT", "wasm": "tree-sitter-scala.wasm" }
+  ],
+  "razor": {
+    "source": "https://github.com/tris203/tree-sitter-razor",
+    "license": "MIT",
+    "wasm": "not-shipped",
+    "commit": null,
+    "note": "No published npm grammar (ADR-0001). .razor files yield unsupported_language until scripts/build-razor-wasm.md produces a pinned wasm."
+  }
+}
