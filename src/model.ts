@@ -57,7 +57,7 @@ export const DEFAULT_EXCLUDED_DIRS: ReadonlySet<string> = new Set([
 ])
 
 /** Snapshot schema version; bump forces a full rebuild (ADR-0003). */
-export const SNAPSHOT_SCHEMA_VERSION = 3
+export const SNAPSHOT_SCHEMA_VERSION = 4
 
 /** Diagnostics codes are a closed enumeration (ADR-0004: no ad-hoc strings). */
 export type DiagnosticCode =

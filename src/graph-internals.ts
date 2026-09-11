@@ -14,18 +14,24 @@ function shortNameOf(name: string): string {
 
 /**
  * Post-process call edges once every project definition is known.
- * Unqualified names keep extract-time exact/inferred. A short-name call
- * that uniquely matches `Owner.method` becomes `inferred` (ADR-0004
- * qualified-name matching); same-file unique owner is `exact`. Several
- * owners and no proof stay `heuristic`.
+ * A short-name call that uniquely matches `Owner.method` is rewritten
+ * to that qualified name (ADR-0007): same-file unique owner is `exact`,
+ * unique across the project is `inferred`. Several owners keep the
+ * short target and `heuristic`. Unqualified names that already equal a
+ * definition are left as extract-time exact/inferred.
  */
 export function resolveCallConfidence(byFile: Record<string, RelationEdge[]>): void {
-  const defs: Array<{ full: string; short: string; file: string }> = []
+  const defs: Array<{ full: string; qualified: string; short: string; file: string }> = []
   for (const edges of Object.values(byFile)) {
     for (const e of edges) {
       if (e.kind !== 'definition') continue
       const full = e.target.toLowerCase()
-      defs.push({ full, short: shortNameOf(full), file: e.location.file.replace(/\\/g, '/') })
+      defs.push({
+        full,
+        qualified: e.target,
+        short: shortNameOf(full),
+        file: e.location.file.replace(/\\/g, '/'),
+      })
     }
   }
 
@@ -43,10 +49,12 @@ export function resolveCallConfidence(byFile: Record<string, RelationEdge[]>): v
       const callFile = e.location.file.replace(/\\/g, '/')
       const inFile = methodMatches.filter((d) => d.file === callFile)
       if (inFile.length === 1) {
+        e.target = inFile[0].qualified
         e.confidence = 'exact'
         continue
       }
       if (methodMatches.length === 1) {
+        e.target = methodMatches[0].qualified
         e.confidence = 'inferred'
         continue
       }

@@ -35,7 +35,7 @@ export function upstreamTraversal(
   const target = fromSymbol.toLowerCase()
 
   let current: UpstreamStep[] = callEdges
-    .filter((e) => e.target.toLowerCase() === target || e.target.toLowerCase().endsWith('/' + target))
+    .filter((e) => callTargetsSymbol(e.target, target))
     .map((edge) => ({ edge, callerSymbol: callerSymbolOf(edge) }))
 
   for (const step of current) {
@@ -47,7 +47,7 @@ export function upstreamTraversal(
     const next: UpstreamStep[] = []
     for (const step of current) {
       const callers = callEdges.filter(
-        (e) => (e.target.toLowerCase() === step.callerSymbol || e.target.toLowerCase().endsWith('/' + step.callerSymbol)) && !visited.has(keyOf(e)),
+        (e) => callTargetsSymbol(e.target, step.callerSymbol) && !visited.has(keyOf(e)),
       )
       for (const edge of callers) {
         visited.add(keyOf(edge))
@@ -59,6 +59,12 @@ export function upstreamTraversal(
   }
 
   return { direct, transitive }
+}
+
+function callTargetsSymbol(edgeTarget: string, symbol: string): boolean {
+  const t = edgeTarget.toLowerCase()
+  const s = symbol.toLowerCase()
+  return t === s || t.endsWith('/' + s) || t.endsWith('.' + s)
 }
 
 function keyOf(edge: RelationEdge): string {

@@ -603,7 +603,7 @@ export class ProjectGraph {
     const visited = new Set<string>()
     interface Step { edge: RelationEdge; callerSymbol: string; chain: RelationEdge[] }
     let frontier: Step[] = callEdges
-      .filter((e) => e.target.toLowerCase() === to || e.target.toLowerCase().endsWith('/' + to))
+      .filter((e) => e.target.toLowerCase() === to || e.target.toLowerCase().endsWith('/' + to) || e.target.toLowerCase().endsWith('.' + to))
       .map((edge) => ({ edge, callerSymbol: symbolOfSource(edge), chain: [edge] }))
     if (frontier.length === 0) {
       return { paths: [], candidates: [], truncated: false, total: 0, diagnostics: [{ code: 'no_path', message: `no call path from ${query.target} to ${query.path_to}` }], metadata: this.metadata }
