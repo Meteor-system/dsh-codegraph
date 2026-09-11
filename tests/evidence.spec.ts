@@ -162,3 +162,81 @@ describe('evidence contract (ticket 6)', () => {
   })
 })
 
+describe('method call confidence (spec #21)', () => {
+  it('unique Owner.method cross-file call is inferred, target stays the short name', async () => {
+    const ctx = activatedCtx(fixtureProject({
+      'src/graph.ts': 'export class ProjectGraph {\n  answerWithTimeout(): void {}\n}\n',
+      'src/index.ts': "import { ProjectGraph } from './graph'\nexport function hostTool(): void {\n  new ProjectGraph().answerWithTimeout()\n}\n",
+    }))
+    const result = await explore(ctx, { mode: 'callers', target: 'ProjectGraph.answerWithTimeout', relation: 'call' })
+    const calls = (result.paths as Array<{ edges: Edge[] }>).flatMap((p) => p.edges).filter((e) => e.kind === 'call')
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls.every((e) => e.target === 'answerWithTimeout')).toBe(true)
+    expect(calls.every((e) => e.confidence === 'inferred')).toBe(true)
+    expect(calls.some((e) => e.source.endsWith('src/index.ts'))).toBe(true)
+  })
+
+  it('same-file unique owner method call is exact', async () => {
+    const ctx = activatedCtx(fixtureProject({
+      'src/graph.ts': 'export class ProjectGraph {\n  answerWithTimeout(): void {}\n  run(): void { this.answerWithTimeout() }\n}\n',
+    }))
+    const result = await explore(ctx, { mode: 'callers', target: 'ProjectGraph.answerWithTimeout', relation: 'call' })
+    const calls = (result.paths as Array<{ edges: Edge[] }>).flatMap((p) => p.edges).filter((e) => e.kind === 'call')
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls.every((e) => e.confidence === 'exact')).toBe(true)
+    expect(calls.every((e) => e.target === 'answerWithTimeout')).toBe(true)
+  })
+
+  it('short call with several method owners stays heuristic', async () => {
+    const ctx = activatedCtx(fixtureProject({
+      'src/a.ts': 'export class Alpha {\n  foo(): void {}\n}\n',
+      'src/b.ts': 'export class Beta {\n  foo(): void {}\n}\n',
+      'src/c.ts': "import { Alpha } from './a'\nexport function run(x: Alpha): void { x.foo() }\n",
+    }))
+    const result = await explore(ctx, { mode: 'callers', target: 'Alpha.foo', relation: 'call' })
+    const fromC = (result.paths as Array<{ edges: Edge[] }>).flatMap((p) => p.edges)
+      .filter((e) => e.kind === 'call' && e.source.endsWith('src/c.ts'))
+    expect(fromC.length).toBeGreaterThan(0)
+    expect(fromC.every((e) => e.confidence === 'heuristic' && e.target === 'foo')).toBe(true)
+    const discovered = await explore(ctx, { mode: 'callers', target: 'foo' })
+    expect(discovered.paths).toEqual([])
+    expect((discovered.candidates as Array<{ name: string }>).map((c) => c.name).sort()).toEqual(['Alpha.foo', 'Beta.foo'])
+  })
+
+  it('schema mismatch rebuilds so stored heuristic method calls are not reused', async () => {
+    const root = fixtureProject({
+      'src/graph.ts': 'export class ProjectGraph {\n  answerWithTimeout(): void {}\n}\n',
+      'src/index.ts': "import { ProjectGraph } from './graph'\nexport function hostTool(): void {\n  new ProjectGraph().answerWithTimeout()\n}\n",
+    })
+    mkdirSync(join(root, '.dsh', 'codegraph'), { recursive: true })
+    writeFileSync(join(root, '.dsh', 'codegraph', 'snapshot.json'), JSON.stringify({
+      schemaVersion: 2,
+      scanShapeHash: JSON.stringify([1_000_000, 50_000, [], []]),
+      byFile: {
+        'src/index.ts': [{
+          kind: 'call',
+          source: 'src/index.ts',
+          target: 'answerWithTimeout',
+          confidence: 'heuristic',
+          location: { file: 'src/index.ts', line: 3, col: 3 },
+        }],
+      },
+    }))
+    const ctx = activatedCtx(root)
+    const result = await explore(ctx, { mode: 'callers', target: 'ProjectGraph.answerWithTimeout', relation: 'call' })
+    const calls = (result.paths as Array<{ edges: Edge[] }>).flatMap((p) => p.edges).filter((e) => e.kind === 'call')
+    expect(calls.every((e) => e.confidence === 'inferred')).toBe(true)
+  })
+
+  it('impact on unique Owner.method carries the same inferred call confidence', async () => {
+    const ctx = activatedCtx(fixtureProject({
+      'src/graph.ts': 'export class ProjectGraph {\n  answerWithTimeout(): void {}\n}\n',
+      'src/index.ts': "import { ProjectGraph } from './graph'\nexport function hostTool(): void {\n  new ProjectGraph().answerWithTimeout()\n}\n",
+    }))
+    const result = await explore(ctx, { mode: 'impact', target: 'ProjectGraph.answerWithTimeout' })
+    const calls = (result.paths as Array<{ edges: Edge[] }>).flatMap((p) => p.edges).filter((e) => e.kind === 'call')
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls.every((e) => e.confidence === 'inferred' && e.target === 'answerWithTimeout')).toBe(true)
+  })
+})
+
